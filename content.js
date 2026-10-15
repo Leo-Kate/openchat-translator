@@ -273,6 +273,16 @@
       range.selectNodeContents(composer);
       selection.removeAllRanges();
       selection.addRange(range);
+      try {
+        composer.dispatchEvent(new InputEvent("beforeinput", {
+          bubbles: true,
+          composed: true,
+          inputType: "insertReplacementText",
+          data: value,
+        }));
+      } catch {
+        composer.dispatchEvent(new Event("beforeinput", { bubbles: true, composed: true }));
+      }
       let changed = false;
       try { changed = document.execCommand("insertText", false, value); } catch { changed = false; }
       if (!changed || composerText(composer) !== value) composer.replaceChildren(document.createTextNode(value));
