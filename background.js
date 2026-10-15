@@ -1,6 +1,6 @@
 const DEFAULTS = {
   enabled: true,
-  engine: "mymemory",
+  engine: "google",
   sourceLang: "zh-CN",
   targetLang: "en",
   autoTranslate: true,
@@ -59,9 +59,27 @@ async function translateWithGoogle(text, source, target) {
     dt: "t",
     q: text,
   });
-  const response = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  let response;
+  try {
+    response = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`, {
+      headers: { Accept: "application/json,text/plain,*/*" },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) throw new Error(`Google Translate HTTP ${response.status}`);
-  const translated = parseGoogleResponse(await response.json());
+  const body = await response.text();
+  if (body.trimStart().startsWith("<")) throw new Error("Google Translate returned a blocked HTML response");
+  let payload;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    throw new Error("Google Translate returned invalid JSON");
+  }
+  const translated = parseGoogleResponse(payload);
   if (!translated) throw new Error("Google Translate returned no text");
   return translated;
 }

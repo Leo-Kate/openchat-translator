@@ -1,6 +1,6 @@
 const DEFAULTS = {
   enabled: true,
-  engine: "mymemory",
+  engine: "google",
   sourceLang: "zh-CN",
   targetLang: "en",
   autoTranslate: true,
@@ -12,6 +12,7 @@ const DEFAULTS = {
 };
 
 const LANGUAGES = [
+  ["auto", "自动检测"],
   ["zh-CN", "中文"], ["en", "英语"], ["es", "西班牙语"], ["fr", "法语"],
   ["de", "德语"], ["it", "意大利语"], ["pt", "葡萄牙语"], ["ja", "日语"],
   ["ko", "韩语"], ["ar", "阿拉伯语"], ["ru", "俄语"], ["id", "印度尼西亚语"],
@@ -52,9 +53,8 @@ async function save() {
 }
 
 function populateLanguages() {
-  for (const id of ["sourceLang", "targetLang"]) {
-    $(id).replaceChildren(...LANGUAGES.map(([value, label]) => new Option(label, value)));
-  }
+  $("sourceLang").replaceChildren(...LANGUAGES.map(([value, label]) => new Option(label, value)));
+  $("targetLang").replaceChildren(...LANGUAGES.filter(([value]) => value !== "auto").map(([value, label]) => new Option(label, value)));
 }
 
 function render(settings) {

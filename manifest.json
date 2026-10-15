@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenChat Translator for WhatsApp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Open-source two-way translation for WhatsApp Web with local settings and cache.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
