@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "OpenChat Translator for WhatsApp",
+  "version": "0.1.0",
+  "description": "Open-source two-way translation for WhatsApp Web with local settings and cache.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "https://api.mymemory.translated.net/*",
+    "https://translate.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "OpenChat Translator",
+    "default_popup": "popup.html"
+  }
+}

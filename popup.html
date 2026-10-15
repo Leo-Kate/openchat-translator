@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenChat Translator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero stagger">
+      <div class="brand-mark" aria-hidden="true">T</div>
+      <div>
+        <p class="eyebrow">OPENCHAT TOOLS</p>
+        <h1>WhatsApp translator</h1>
+        <p class="subhead">双向翻译 · 本地设置 · 可审计</p>
+      </div>
+      <label class="switch" title="Enable or disable translation">
+        <input id="enabled" type="checkbox">
+        <span class="switch-track"></span>
+      </label>
+    </header>
+
+    <section class="panel stagger" style="--delay: 40ms">
+      <div class="panel-heading"><span>Language pair</span><span class="status-dot" id="liveDot"></span></div>
+      <div class="pair-grid">
+        <label>My language<select id="sourceLang"></select></label>
+        <label>Contact language<select id="targetLang"></select></label>
+      </div>
+      <div class="swap-row"><button class="ghost-button" id="swapLang" type="button" title="Swap languages">Swap languages</button><span id="cacheStats">Cache 0</span></div>
+    </section>
+
+    <section class="panel stagger" style="--delay: 80ms">
+      <div class="panel-heading"><span>Translation engine</span></div>
+      <label>Provider<select id="engine"><option value="mymemory">MyMemory · free fallback</option><option value="google">Google Translate · unofficial endpoint</option></select></label>
+      <div class="notice">Message text is sent to the selected provider when a translation is requested.</div>
+    </section>
+
+    <section class="panel stagger" style="--delay: 120ms">
+      <div class="panel-heading"><span>Conversation behavior</span></div>
+      <label class="check-row"><input id="autoTranslate" type="checkbox"><span>Translate incoming messages automatically</span></label>
+      <label class="check-row"><input id="translateOutgoing" type="checkbox"><span>Translate outgoing messages when requested</span></label>
+      <label class="check-row"><input id="sendAfterTranslate" type="checkbox"><span>Alt + Enter translates and sends</span></label>
+      <label class="check-row"><input id="showOriginal" type="checkbox"><span>Keep the original message visible</span></label>
+    </section>
+
+    <section class="panel stagger" style="--delay: 160ms">
+      <div class="panel-heading"><span>Appearance</span></div>
+      <div class="appearance-grid"><label>Translation color<input id="translationColor" type="color"></label><label>Font size<input id="fontSize" type="range" min="11" max="18" step="1"><output id="fontSizeValue"></output></label></div>
+    </section>
+
+    <footer class="actions stagger" style="--delay: 200ms"><button class="primary-button" id="save" type="button">Save settings</button><button class="ghost-button" id="clearCache" type="button">Clear cache</button></footer>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <p class="legal">Independent open-source project. WhatsApp is a trademark of WhatsApp LLC. This extension is not affiliated with WhatsApp or Meta.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
