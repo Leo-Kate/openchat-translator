@@ -46,6 +46,12 @@
     });
   }
 
+  function publicSettings(settings) {
+    if (!settings) return settings;
+    const { apiSettings: _apiSettings, ...safeSettings } = settings;
+    return safeSettings;
+  }
+
   function textFromMessage(message) {
     const candidates = Array.from(message.querySelectorAll(
       "[data-testid='selectable-text'], .selectable-text, span[dir='auto'], span[dir='ltr'], span[dir='rtl']",
@@ -264,7 +270,7 @@
 
   async function loadSettings() {
     const result = await send({ type: "getSettings" });
-    state.settings = result.settings || {
+    state.settings = publicSettings(result.settings || {
       enabled: true,
       engine: "google",
       sourceLang: "zh-CN",
@@ -274,7 +280,7 @@
       sendAfterTranslate: false,
       translationColor: "#2563eb",
       fontSize: 13,
-    };
+    });
     document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
   }
 
@@ -296,7 +302,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.openchatSettings) return;
-    state.settings = changes.openchatSettings.newValue;
+    state.settings = publicSettings(changes.openchatSettings.newValue);
     document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
     scanMessages();
     decorateComposer();
