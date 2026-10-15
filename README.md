@@ -9,6 +9,7 @@
 - `Alt + Enter` 翻译草稿；可选翻译后自动发送
 - 中文、英语、西班牙语、法语、德语、意大利语、葡萄牙语、日语、韩语、阿拉伯语、俄语和印尼语
 - Google Translate 公开接口为默认引擎，MyMemory 免费接口自动回退
+- DeepL、OpenAI、Anthropic/Claude、Gemini、豆包、通义千问和 OpenAI 兼容中转站可通过 API Key 接入
 - 本地翻译缓存、颜色和字号设置
 - 设置全部存储在浏览器本地
 
@@ -16,12 +17,20 @@
 
 ## 接口说明
 
-这是独立开源实现，不包含 Chrome Web Store 商业扩展的私有后端、账号系统或 API 密钥。后台 service worker 提供统一的 `translate` 消息接口，当前有两个公开服务适配器：
+这是独立开源实现，不包含 Chrome Web Store 商业扩展的私有后端、账号系统或 API 密钥。后台 service worker 提供统一的 `translate` 消息接口，当前支持以下服务适配器：
 
 - `google`：Google Translate 公开端点，优先用于日常翻译，可能被网络或反自动化策略拦截
 - `mymemory`：Google 失败时的免费回退服务，存在速率限制
+- `deepl`：DeepL API，支持免费或 Pro endpoint，需要用户自己的 Key
+- `openai`：OpenAI Chat Completions，需要 Key、Base URL 和模型
+- `anthropic`：Anthropic Messages API；Claude Code 使用的客户端凭据不能直接当作此 API Key
+- `gemini`：Google Gemini generateContent，需要 Key 和模型
+- `doubao`：火山方舟 OpenAI 兼容接口，需要 Key、Endpoint ID 和 endpoint
+- `qwen`：DashScope OpenAI 兼容接口，需要 Key 和模型
+- `relay`：任意返回 OpenAI Chat Completions 格式的 HTTPS 中转站
 
 请求失败时会自动尝试另一个适配器。消息文字只在请求翻译时发送给选定服务，缓存和设置保存在本地。
+API Key 仅写入 `chrome.storage.local`，不会提交到 Git，也不会注入 WhatsApp 页面。使用自定义中转站时，Chrome 会按该域名请求可选的 HTTPS host permission。
 
 ## 本地加载
 

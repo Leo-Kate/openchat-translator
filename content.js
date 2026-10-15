@@ -177,29 +177,59 @@
     range.selectNodeContents(composer);
     selection.removeAllRanges();
     selection.addRange(range);
-    document.execCommand("insertText", false, value);
-    composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    try {
+      composer.dispatchEvent(new InputEvent("beforeinput", {
+        bubbles: true,
+        composed: true,
+        inputType: "insertText",
+        data: value,
+      }));
+    } catch {
+      composer.dispatchEvent(new Event("beforeinput", { bubbles: true, composed: true }));
+    }
+    let changed = false;
+    try { changed = document.execCommand("insertText", false, value); } catch { changed = false; }
+    if (!changed || composerText(composer) !== value) composer.replaceChildren(document.createTextNode(value));
+    try {
+      composer.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        composed: true,
+        inputType: "insertText",
+        data: value,
+      }));
+    } catch {
+      composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    }
+    composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return composerText(composer) === value;
   }
 
   async function translateComposer(sendAfter = false) {
     const composer = readComposer();
     const original = composerText(composer);
-    if (!composer || !original) return;
+    if (!composer || !original || state.composerBusy) return false;
+    state.composerBusy = true;
     if (state.composerTranslated && original === state.composerTranslated) {
-      writeComposer(composer, state.composerOriginal);
+      const restored = writeComposer(composer, state.composerOriginal);
       state.composerTranslated = "";
       state.composerOriginal = "";
-      return;
+      state.composerBusy = false;
+      return restored;
     }
-    const result = await send({
-      type: "translate",
-      items: [{ text: original, source: state.settings.sourceLang, target: state.settings.targetLang, engine: state.settings.engine }],
-    });
-    if (!result.ok || !result.translations?.[0]) return;
-    state.composerOriginal = original;
-    state.composerTranslated = result.translations[0];
-    writeComposer(composer, state.composerTranslated);
-    if (sendAfter) setTimeout(() => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true })), 30);
+    try {
+      const result = await send({
+        type: "translate",
+        items: [{ text: original, source: state.settings.sourceLang, target: state.settings.targetLang, engine: state.settings.engine }],
+      });
+      if (!result.ok || !result.translations?.[0]) return false;
+      state.composerOriginal = original;
+      state.composerTranslated = result.translations[0];
+      const written = writeComposer(composer, state.composerTranslated);
+      if (written && sendAfter) setTimeout(() => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true })), 30);
+      return written;
+    } finally {
+      state.composerBusy = false;
+    }
   }
 
   function decorateComposer() {
@@ -211,9 +241,18 @@
     action.className = "wst-compose-action";
     action.type = "button";
     action.textContent = "T";
-    action.title = "Translate draft (click again to restore)";
-    action.setAttribute("aria-label", "Translate draft");
-    action.addEventListener("click", () => translateComposer(false));
+    action.title = "翻译草稿，再次点击恢复原文";
+    action.setAttribute("aria-label", "翻译草稿");
+    action.addEventListener("click", async () => {
+      if (state.composerBusy) return;
+      const previous = action.textContent;
+      action.disabled = true;
+      action.textContent = "...";
+      const written = await translateComposer(false);
+      action.disabled = false;
+      action.textContent = previous;
+      if (!written) action.title = "翻译失败，请检查引擎或 API 设置";
+    });
     footer.appendChild(action);
     composer.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && event.altKey) {
@@ -227,7 +266,7 @@
     const result = await send({ type: "getSettings" });
     state.settings = result.settings || {
       enabled: true,
-      engine: "mymemory",
+      engine: "google",
       sourceLang: "zh-CN",
       targetLang: "en",
       autoTranslate: true,
