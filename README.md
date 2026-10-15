@@ -2,6 +2,12 @@
 
 一个独立的 Manifest V3 Chrome 扩展，为 WhatsApp Web 提供双向消息翻译。项目参考了 Chrome Web Store 上公开展示的交互方向，但不复制目标扩展的品牌、代码、截图或私有服务。
 
+项目仓库：[Leo-Kate/openchat-translator](https://github.com/Leo-Kate/openchat-translator)
+
+## 关注项目
+
+打开仓库页面后点击 **Watch**，选择 **All Activity** 即可订阅版本、Issue 和讨论更新；点击 **Star** 可以收藏项目。欢迎通过 Issue 报告 WhatsApp 页面兼容性问题，或提交 Pull Request 改进翻译服务适配器。
+
 ## 当前功能
 
 - 接收消息自动翻译，或悬停后点击 `T` 手动翻译

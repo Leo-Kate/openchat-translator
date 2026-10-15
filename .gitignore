@@ -1,0 +1,14 @@
+# Local secrets and provider configuration
+.env
+.env.*
+*.key
+*.pem
+credentials*
+secrets*
+
+# Local editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
