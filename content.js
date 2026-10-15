@@ -249,6 +249,12 @@
     decorateComposer();
   });
 
+  document.addEventListener("pointerover", (event) => {
+    if (!state.settings?.enabled) return;
+    const target = event.target instanceof Element ? event.target.closest(messageSelectors.join(",")) : null;
+    if (target) decorateMessage(target);
+  }, { passive: true });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.openchatSettings) return;
     state.settings = changes.openchatSettings.newValue;
