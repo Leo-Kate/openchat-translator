@@ -33,7 +33,8 @@ output { color: #0f172a; display: block; font-size: 10px; margin-top: 4px; text-
 .provider-config { display: grid; gap: 8px; margin-top: 9px; }
 .provider-config label { color: #64748b; font-size: 10px; }
 .provider-config .provider-help { color: #64748b; font-size: 10px; line-height: 1.45; margin: 0; }
-.actions { display: flex; gap: 8px; padding: 2px 0 0; }
+.actions { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; padding: 2px 0 0; }
+.actions .primary-button { grid-column: 1 / -1; }
 button { border: 0; border-radius: 7px; cursor: pointer; font: 650 11px inherit; min-height: 32px; padding: 0 12px; transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease; }
 button:hover { transform: translateY(-1px); }
 .primary-button { background: #2563eb; box-shadow: 0 4px 10px rgba(37, 99, 235, .18); color: #fff; flex: 1; }

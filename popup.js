@@ -67,7 +67,10 @@ function mergeSettings(stored = {}) {
 }
 
 function send(message) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(message, (response) => resolve(response || { ok: false, error: "没有收到后台响应" })));
+  return new Promise((resolve) => chrome.runtime.sendMessage(message, (response) => {
+    if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+    else resolve(response || { ok: false, error: "没有收到后台响应" });
+  }));
 }
 
 function showStatus(message, error = false) {
@@ -158,6 +161,27 @@ async function save() {
   }
 }
 
+async function testProvider() {
+  const button = $("testProvider");
+  button.disabled = true;
+  showStatus("正在测试当前翻译引擎");
+  try {
+    const draft = readForm();
+    await ensureEndpointPermission(draft.engine, draft.apiSettings);
+    const result = await send({
+      type: "testProvider",
+      provider: draft.engine,
+      apiSettings: draft.apiSettings,
+    });
+    if (!result.ok) throw new Error(result.error || "引擎测试失败");
+    showStatus(`测试成功：${result.translated}`);
+  } catch (error) {
+    showStatus(error.message || "引擎测试失败", true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function populateLanguages() {
   $("sourceLang").replaceChildren(...LANGUAGES.map(([value, label]) => new Option(label, value)));
   $("targetLang").replaceChildren(...LANGUAGES.filter(([value]) => value !== "auto").map(([value, label]) => new Option(label, value)));
@@ -184,6 +208,7 @@ async function init() {
 }
 
 $("save").addEventListener("click", save);
+$("testProvider").addEventListener("click", testProvider);
 $("engine").addEventListener("change", () => renderProviderConfig(currentSettings.apiSettings));
 $("fontSize").addEventListener("input", (event) => { $("fontSizeValue").value = `${event.target.value}px`; });
 $("swapLang").addEventListener("click", () => {

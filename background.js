@@ -25,13 +25,29 @@ const DEFAULTS = {
 const CACHE_KEY = "openchatTranslationCache";
 const SETTINGS_KEY = "openchatSettings";
 const MAX_CACHE = 500;
+const REQUEST_TIMEOUT_MS = 9000;
 let cache = null;
+const inFlightTranslations = new Map();
 
 function mergeApiSettings(stored = {}) {
   return Object.fromEntries(Object.entries(DEFAULT_API_SETTINGS).map(([provider, defaults]) => [
     provider,
-    { ...defaults, ...(stored[provider] || {}) },
+    {
+      ...defaults,
+      ...(stored[provider] || {}),
+      ...(stored[provider]?.baseURL && !stored[provider]?.baseUrl ? { baseUrl: stored[provider].baseURL } : {}),
+    },
   ]));
+}
+
+function normalizeProviderConfig(provider, config = {}) {
+  const normalized = { ...config };
+  if (!normalized.baseUrl && normalized.baseURL) normalized.baseUrl = normalized.baseURL;
+  if (!normalized.endpoint && normalized.url) normalized.endpoint = normalized.url;
+  if (["openai", "doubao", "qwen", "relay"].includes(provider) && !normalized.model) {
+    normalized.model = provider === "openai" ? "gpt-4o-mini" : "";
+  }
+  return normalized;
 }
 
 function mergeSettings(stored = {}) {
@@ -72,13 +88,20 @@ function providerError(provider, message) {
   return new Error(`${provider}: ${message}`);
 }
 
-async function fetchText(url, options = {}, timeoutMs = 12000) {
+async function fetchText(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     const body = await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const payload = JSON.parse(body);
+        detail = payload?.error?.message || payload?.message || payload?.error?.type || "";
+      } catch { detail = ""; }
+      throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
     return body;
   } catch (error) {
     if (error?.name === "AbortError") throw new Error("request timed out");
@@ -88,7 +111,7 @@ async function fetchText(url, options = {}, timeoutMs = 12000) {
   }
 }
 
-async function fetchJson(url, options = {}, timeoutMs = 12000) {
+async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const body = await fetchText(url, options, timeoutMs);
   if (body.trimStart().startsWith("<")) throw new Error("provider returned HTML instead of JSON");
   try {
@@ -177,12 +200,18 @@ function extractChatCompletion(payload) {
 async function translateWithOpenAICompatible(text, source, target, config, provider) {
   const key = requireKey(config, provider);
   const base = httpsBaseUrl(config.baseUrl, provider);
-  const endpoint = /\/chat\/completions$/i.test(base) ? base : `${base}/chat/completions`;
+  const endpointUrl = new URL(base);
+  if (!/\/chat\/completions$/i.test(endpointUrl.pathname)) {
+    endpointUrl.pathname = `${endpointUrl.pathname.replace(/\/+$/, "")}/chat/completions`;
+  }
+  const endpoint = endpointUrl.toString();
+  const model = String(config.model || "").trim();
+  if (!model) throw providerError(provider, "model is not configured");
   const payload = await fetchJson(endpoint, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: config.model?.trim(),
+      model,
       temperature: 0.1,
       messages: [{ role: "user", content: translationPrompt(text, source, target) }],
     }),
@@ -268,7 +297,7 @@ async function translateOne({ text, source, target, engine, apiSettings }) {
     const translate = PROVIDERS[provider];
     if (!translate) continue;
     try {
-      return await translate(clean, source, target, apiSettings?.[provider] || {});
+      return await translate(clean, source, target, normalizeProviderConfig(provider, apiSettings?.[provider] || {}));
     } catch (error) {
       errors.push(error?.message || `${provider} failed`);
     }
@@ -279,13 +308,9 @@ async function translateOne({ text, source, target, engine, apiSettings }) {
 async function translateMany(items) {
   const settings = await getSettings();
   const currentCache = await loadCache();
-  const result = [];
-  for (const item of items) {
+  const translateCached = async (item) => {
     const text = String(item?.text || "").trim();
-    if (!text) {
-      result.push("");
-      continue;
-    }
+    if (!text) return "";
     const source = item.source || settings.sourceLang;
     const target = item.target || settings.targetLang;
     const engine = item.engine || settings.engine;
@@ -293,15 +318,30 @@ async function translateMany(items) {
     const variant = [providerConfig.baseUrl, providerConfig.endpoint, providerConfig.model].filter(Boolean).join("|");
     const key = cacheKey(text, source, target, engine, variant);
     if (currentCache.has(key)) {
-      result.push(currentCache.get(key));
-      continue;
+      return currentCache.get(key);
     }
-    const translated = await translateOne({ text, source, target, engine, apiSettings: settings.apiSettings });
-    currentCache.set(key, translated);
-    result.push(translated);
-    scheduleCacheSave();
-  }
-  return result;
+    const pendingKey = `translation:${key}`;
+    if (inFlightTranslations.has(pendingKey)) return inFlightTranslations.get(pendingKey);
+    const request = translateOne({ text, source, target, engine, apiSettings: settings.apiSettings })
+      .then((translated) => {
+        currentCache.set(key, translated);
+        scheduleCacheSave();
+        return translated;
+      })
+      .finally(() => inFlightTranslations.delete(pendingKey));
+    inFlightTranslations.set(pendingKey, request);
+    return request;
+  };
+  return Promise.all(items.map(translateCached));
+}
+
+async function testProvider(provider, apiSettingsOverride = null) {
+  const settings = await getSettings();
+  const translate = PROVIDERS[provider];
+  if (!translate) throw new Error("未知翻译引擎");
+  const config = normalizeProviderConfig(provider, apiSettingsOverride?.[provider] || settings.apiSettings?.[provider] || {});
+  const translated = await translate("Hello, how are you?", "en", "zh-CN", config);
+  return translated;
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -322,6 +362,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message?.type === "cacheStats") {
     loadCache().then((currentCache) => sendResponse({ ok: true, size: currentCache.size }));
+    return true;
+  }
+  if (message?.type === "testProvider") {
+    testProvider(String(message.provider || "google"), message.apiSettings || null)
+      .then((translated) => sendResponse({ ok: true, translated }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   return false;

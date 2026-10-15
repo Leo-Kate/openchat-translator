@@ -8,9 +8,16 @@
     settings: null,
     scanned: new WeakMap(),
     pending: new Map(),
+    mutedChats: new Set(),
+    activeChatKey: "",
+    activeChatLabel: "当前对话",
+    boundComposers: new WeakSet(),
     composerOriginal: "",
     composerTranslated: "",
+    composerWriting: false,
   };
+
+  const MUTED_CHATS_KEY = "openchatMutedChats";
 
   const messageSelectors = [
     "[data-testid='msg-container']",
@@ -50,6 +57,82 @@
     if (!settings) return settings;
     const { apiSettings: _apiSettings, ...safeSettings } = settings;
     return safeSettings;
+  }
+
+  function normalizeChatKey(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase()
+      .slice(0, 180);
+  }
+
+  function readActiveChat() {
+    const info = document.querySelector("[data-testid='conversation-info-header']");
+    const header = info || Array.from(document.querySelectorAll("header")).find((element) => {
+      const text = (element.innerText || "").trim();
+      return text && text.length < 300 && !/whatsapp/i.test(text);
+    });
+    const message = document.querySelector("[data-testid='msg-container'][data-id], div.message-in[data-id], div.message-out[data-id]");
+    const messageId = message?.getAttribute("data-id") || "";
+    const messageChatId = messageId.match(/^(?:true|false)[_-]([^_-]+)[_-]/i)?.[1] || "";
+    const label = (info?.querySelector("span[dir='auto'], span[title]")?.innerText || info?.innerText || header?.innerText || "")
+      .replace(/\s+/g, " ").trim().split("\n")[0].slice(0, 120);
+    const key = normalizeChatKey(messageChatId || info?.getAttribute("data-id") || label);
+    return { key: key ? `chat:${key}` : "", label: label || "当前对话" };
+  }
+
+  function currentChatMuted() {
+    return Boolean(state.activeChatKey && state.mutedChats.has(state.activeChatKey));
+  }
+
+  function removeAllTranslations() {
+    document.querySelectorAll(".wst-translation-row").forEach((row) => {
+      row.classList.add("wst-leaving");
+      setTimeout(() => row.remove(), 140);
+    });
+  }
+
+  function updateChatToggle() {
+    document.querySelectorAll(".wst-chat-toggle").forEach((button) => {
+      const muted = currentChatMuted();
+      button.textContent = muted ? "恢复翻译" : "暂停翻译";
+      button.title = muted ? `恢复${state.activeChatLabel}的自动翻译` : `暂停${state.activeChatLabel}的自动翻译`;
+      button.setAttribute("aria-label", button.title);
+      button.dataset.muted = muted ? "true" : "false";
+    });
+    document.querySelectorAll(".wst-compose-action").forEach((button) => {
+      button.disabled = currentChatMuted() || Boolean(state.composerBusy);
+      button.title = currentChatMuted() ? "当前对话已暂停翻译，点击恢复翻译" : "翻译草稿，再次点击恢复原文";
+      button.setAttribute("aria-label", button.title);
+    });
+  }
+
+  async function refreshActiveChat() {
+    const next = readActiveChat();
+    if (next.key === state.activeChatKey) {
+      if (next.label && next.label !== state.activeChatLabel) {
+        state.activeChatLabel = next.label;
+        updateChatToggle();
+      }
+      return;
+    }
+    state.activeChatKey = next.key;
+    state.activeChatLabel = next.label;
+    state.composerOriginal = "";
+    state.composerTranslated = "";
+    updateChatToggle();
+    if (currentChatMuted()) removeAllTranslations();
+  }
+
+  async function setCurrentChatMuted(muted) {
+    if (!state.activeChatKey) return false;
+    if (muted) state.mutedChats.add(state.activeChatKey);
+    else state.mutedChats.delete(state.activeChatKey);
+    await chrome.storage.local.set({ [MUTED_CHATS_KEY]: Array.from(state.mutedChats).slice(-200) });
+    updateChatToggle();
+    if (muted) removeAllTranslations();
+    return true;
   }
 
   function textFromMessage(message) {
@@ -120,7 +203,7 @@
   }
 
   async function translateMessage(message, force = false) {
-    if (!state.settings?.enabled) return;
+    if (!state.settings?.enabled || currentChatMuted()) return;
     const sourceText = textFromMessage(message);
     if (!sourceText || sourceText.length > 5000) return;
     const outgoing = isOutgoing(message);
@@ -176,53 +259,58 @@
     return (composer?.innerText || composer?.textContent || "").replace(/\u200b/g, "").trim();
   }
 
-  function writeComposer(composer, value) {
-    composer.focus();
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(composer);
-    selection.removeAllRanges();
-    selection.addRange(range);
+  function nextFrame() {
+    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  async function writeComposer(composer, value) {
+    if (!composer) return false;
+    state.composerWriting = true;
     try {
-      composer.dispatchEvent(new InputEvent("beforeinput", {
-        bubbles: true,
-        composed: true,
-        inputType: "insertText",
-        data: value,
-      }));
-    } catch {
-      composer.dispatchEvent(new Event("beforeinput", { bubbles: true, composed: true }));
+      composer.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      let changed = false;
+      try { changed = document.execCommand("insertText", false, value); } catch { changed = false; }
+      if (!changed || composerText(composer) !== value) composer.replaceChildren(document.createTextNode(value));
+      try {
+        composer.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          inputType: "insertReplacementText",
+          data: value,
+        }));
+      } catch {
+        composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      }
+      composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      const end = document.createRange();
+      end.selectNodeContents(composer);
+      end.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(end);
+      await nextFrame();
+      return composerText(composer) === value;
+    } finally {
+      state.composerWriting = false;
     }
-    let changed = false;
-    try { changed = document.execCommand("insertText", false, value); } catch { changed = false; }
-    if (!changed || composerText(composer) !== value) composer.replaceChildren(document.createTextNode(value));
-    try {
-      composer.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        composed: true,
-        inputType: "insertText",
-        data: value,
-      }));
-    } catch {
-      composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-    }
-    composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    return composerText(composer) === value;
   }
 
   async function translateComposer(sendAfter = false) {
     const composer = readComposer();
     const original = composerText(composer);
-    if (!composer || !original || state.composerBusy) return false;
+    if (!composer || !original || state.composerBusy || currentChatMuted()) return false;
     state.composerBusy = true;
-    if (state.composerTranslated && original === state.composerTranslated) {
-      const restored = writeComposer(composer, state.composerOriginal);
-      state.composerTranslated = "";
-      state.composerOriginal = "";
-      state.composerBusy = false;
-      return restored;
-    }
     try {
+      if (state.composerTranslated && original === state.composerTranslated) {
+        const restored = await writeComposer(composer, state.composerOriginal);
+        state.composerTranslated = "";
+        state.composerOriginal = "";
+        return restored;
+      }
       const result = await send({
         type: "translate",
         items: [{ text: original, source: state.settings.sourceLang, target: state.settings.targetLang, engine: state.settings.engine }],
@@ -230,42 +318,95 @@
       if (!result.ok || !result.translations?.[0]) return false;
       state.composerOriginal = original;
       state.composerTranslated = result.translations[0];
-      const written = writeComposer(composer, state.composerTranslated);
-      if (written && sendAfter) setTimeout(() => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true })), 30);
+      const written = await writeComposer(composer, state.composerTranslated);
+      if (written && sendAfter) setTimeout(() => sendComposer(composer), 80);
       return written;
     } finally {
       state.composerBusy = false;
     }
   }
 
+  function sendComposer(composer) {
+    const sendButton = document.querySelector("button[data-testid='send'], button[aria-label='Send'], button[title='Send']");
+    if (sendButton && !sendButton.disabled) {
+      sendButton.click();
+      return true;
+    }
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true }));
+    return false;
+  }
+
+  function setComposerStatus(footer, text, error = false) {
+    let status = footer.querySelector(".wst-compose-status");
+    if (!status) {
+      status = document.createElement("span");
+      status.className = "wst-compose-status";
+      footer.appendChild(status);
+    }
+    status.textContent = text;
+    status.dataset.error = error ? "true" : "false";
+    clearTimeout(status.__wstTimer);
+    status.__wstTimer = setTimeout(() => status.remove(), 3200);
+  }
+
   function decorateComposer() {
     const composer = readComposer();
     const footer = composer?.closest("footer") || composer?.parentElement;
-    if (!composer || !footer || footer.querySelector(".wst-compose-action")) return;
+    if (!composer || !footer) return;
     if (getComputedStyle(footer).position === "static") footer.style.position = "relative";
-    const action = document.createElement("button");
-    action.className = "wst-compose-action";
-    action.type = "button";
-    action.textContent = "T";
-    action.title = "翻译草稿，再次点击恢复原文";
-    action.setAttribute("aria-label", "翻译草稿");
-    action.addEventListener("click", async () => {
-      if (state.composerBusy) return;
-      const previous = action.textContent;
-      action.disabled = true;
-      action.textContent = "...";
-      const written = await translateComposer(false);
-      action.disabled = false;
-      action.textContent = previous;
-      if (!written) action.title = "翻译失败，请检查引擎或 API 设置";
-    });
-    footer.appendChild(action);
-    composer.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && event.altKey) {
-        event.preventDefault();
-        translateComposer(state.settings.sendAfterTranslate);
-      }
-    });
+    let action = footer.querySelector(".wst-compose-action");
+    if (!action) {
+      action = document.createElement("button");
+      action.className = "wst-compose-action";
+      action.type = "button";
+      action.textContent = "翻译";
+      action.title = "翻译草稿，再次点击恢复原文";
+      action.setAttribute("aria-label", "翻译草稿，再次点击恢复原文");
+      action.addEventListener("click", async () => {
+        if (state.composerBusy || currentChatMuted()) return;
+        action.disabled = true;
+        action.textContent = "…";
+        setComposerStatus(footer, "正在翻译草稿");
+        const restoring = state.composerTranslated && composerText(composer) === state.composerTranslated;
+        const written = await translateComposer(false);
+        action.textContent = "翻译";
+        updateChatToggle();
+        if (written) setComposerStatus(footer, restoring ? "已恢复原文" : "已写入译文");
+        else setComposerStatus(footer, "翻译失败，请检查设置或网络", true);
+      });
+      footer.appendChild(action);
+    }
+
+    let chatToggle = footer.querySelector(".wst-chat-toggle");
+    if (!chatToggle) {
+      chatToggle = document.createElement("button");
+      chatToggle.className = "wst-chat-toggle";
+      chatToggle.type = "button";
+      chatToggle.addEventListener("click", async () => {
+        const muted = !currentChatMuted();
+        await setCurrentChatMuted(muted);
+        setComposerStatus(footer, muted ? "已暂停当前对话翻译" : "已恢复当前对话翻译");
+      });
+      footer.appendChild(chatToggle);
+    }
+
+    if (!state.boundComposers.has(composer)) {
+      state.boundComposers.add(composer);
+      composer.addEventListener("input", () => {
+        if (state.composerWriting) return;
+        if (state.composerTranslated && composerText(composer) !== state.composerTranslated) {
+          state.composerOriginal = "";
+          state.composerTranslated = "";
+        }
+      });
+      composer.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && event.altKey) {
+          event.preventDefault();
+          translateComposer(state.settings.sendAfterTranslate);
+        }
+      });
+    }
+    updateChatToggle();
   }
 
   async function loadSettings() {
@@ -284,6 +425,11 @@
     document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
   }
 
+  async function loadMutedChats() {
+    const stored = await chrome.storage.local.get(MUTED_CHATS_KEY);
+    state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
+  }
+
   const observer = new MutationObserver((mutations) => {
     if (!state.settings?.enabled) return;
     for (const mutation of mutations) {
@@ -291,6 +437,7 @@
         if (node.nodeType === Node.ELEMENT_NODE) scanMessages(node);
       });
     }
+    refreshActiveChat();
     decorateComposer();
   });
 
@@ -301,20 +448,30 @@
   }, { passive: true });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.openchatSettings) return;
-    state.settings = publicSettings(changes.openchatSettings.newValue);
-    document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
-    scanMessages();
-    decorateComposer();
+    if (area !== "local") return;
+    if (changes[MUTED_CHATS_KEY]) {
+      state.mutedChats = new Set(Array.isArray(changes[MUTED_CHATS_KEY].newValue) ? changes[MUTED_CHATS_KEY].newValue : []);
+      updateChatToggle();
+      if (currentChatMuted()) removeAllTranslations();
+    }
+    if (changes.openchatSettings) {
+      state.settings = publicSettings(changes.openchatSettings.newValue);
+      document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
+      scanMessages();
+      decorateComposer();
+    }
   });
 
   (async () => {
     await loadSettings();
+    await loadMutedChats();
+    await refreshActiveChat();
     scanMessages();
     decorateComposer();
     observer.observe(document.body, { childList: true, subtree: true });
     setInterval(() => {
       if (!state.settings?.enabled) return;
+      refreshActiveChat();
       scanMessages();
       decorateComposer();
     }, 1500);
