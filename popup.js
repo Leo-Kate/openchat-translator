@@ -12,9 +12,9 @@ const DEFAULTS = {
 };
 
 const LANGUAGES = [
-  ["zh-CN", "中文"], ["en", "English"], ["es", "Español"], ["fr", "Français"],
-  ["de", "Deutsch"], ["it", "Italiano"], ["pt", "Português"], ["ja", "日本語"],
-  ["ko", "한국어"], ["ar", "العربية"], ["ru", "Русский"], ["id", "Bahasa Indonesia"],
+  ["zh-CN", "中文"], ["en", "英语"], ["es", "西班牙语"], ["fr", "法语"],
+  ["de", "德语"], ["it", "意大利语"], ["pt", "葡萄牙语"], ["ja", "日语"],
+  ["ko", "韩语"], ["ar", "阿拉伯语"], ["ru", "俄语"], ["id", "印度尼西亚语"],
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -48,7 +48,7 @@ async function save() {
   const settings = readForm();
   await chrome.storage.local.set({ openchatSettings: settings });
   await sendSettingsToTab();
-  showStatus("Settings saved");
+  showStatus("设置已保存");
 }
 
 function populateLanguages() {
@@ -73,7 +73,7 @@ async function init() {
   const settings = { ...DEFAULTS, ...(stored.openchatSettings || {}) };
   render(settings);
   const stats = await send({ type: "cacheStats" });
-  $("cacheStats").textContent = `Cache ${stats?.size || 0}`;
+  $("cacheStats").textContent = `缓存 ${stats?.size || 0}`;
 }
 
 $("save").addEventListener("click", save);
@@ -85,8 +85,8 @@ $("swapLang").addEventListener("click", () => {
 });
 $("clearCache").addEventListener("click", async () => {
   await send({ type: "clearCache" });
-  $("cacheStats").textContent = "Cache 0";
-  showStatus("Translation cache cleared");
+  $("cacheStats").textContent = "缓存 0";
+  showStatus("翻译缓存已清空");
 });
 
 init();

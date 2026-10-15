@@ -16,6 +16,10 @@
     "[data-testid='msg-container']",
     "div.message-in",
     "div.message-out",
+    "[data-id^='true_']",
+    "[data-id^='false_']",
+    "[data-id^='true-']",
+    "[data-id^='false-']",
   ];
 
   const LANG_LABELS = {
@@ -43,12 +47,21 @@
   }
 
   function textFromMessage(message) {
-    const selectable = message.querySelector("[data-testid='selectable-text'], .selectable-text, span[dir='auto']");
-    const text = selectable?.innerText || message.innerText || "";
+    const candidates = Array.from(message.querySelectorAll(
+      "[data-testid='selectable-text'], .selectable-text, span[dir='auto'], span[dir='ltr'], span[dir='rtl']",
+    ));
+    const text = candidates
+      .map((element) => element.innerText || element.textContent || "")
+      .map((value) => value.replace(/\s+/g, " ").trim())
+      .filter((value) => value && !/^\d{1,2}:\d{2}$/.test(value))
+      .sort((left, right) => right.length - left.length)[0] || message.innerText || "";
     return text.replace(/\s+/g, " ").trim();
   }
 
   function isOutgoing(message) {
+    const dataId = message.getAttribute("data-id") || "";
+    if (/^(true|outgoing)[_-]/i.test(dataId)) return true;
+    if (/^(false|incoming)[_-]/i.test(dataId)) return false;
     return message.classList.contains("message-out") || Boolean(message.querySelector("[data-testid='msg-dblcheck'], [data-testid='msg-check']"));
   }
 
@@ -123,6 +136,8 @@
 
   function decorateMessage(message) {
     if (!(message instanceof HTMLElement) || message.dataset.wstMessage === "true") return;
+    const parentMessage = message.parentElement?.closest(messageSelectors.join(","));
+    if (parentMessage && parentMessage !== message) return;
     const text = textFromMessage(message);
     if (!text) return;
     message.dataset.wstMessage = "true";
@@ -247,5 +262,10 @@
     scanMessages();
     decorateComposer();
     observer.observe(document.body, { childList: true, subtree: true });
+    setInterval(() => {
+      if (!state.settings?.enabled) return;
+      scanMessages();
+      decorateComposer();
+    }, 1500);
   })();
 })();
