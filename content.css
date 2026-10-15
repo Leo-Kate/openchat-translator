@@ -135,5 +135,39 @@
 
 .wst-compose-status[data-error="true"] { background: #b42318; }
 
+.wst-reload-notice {
+  align-items: center;
+  animation: wst-enter 180ms ease-out both;
+  background: #fff;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  bottom: 76px;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, .18);
+  color: #0f172a;
+  display: flex;
+  flex-wrap: wrap;
+  font: 13px/1.5 system-ui, sans-serif;
+  gap: 12px;
+  max-width: min(440px, calc(100vw - 48px));
+  padding: 12px 16px;
+  position: fixed;
+  right: 24px;
+  z-index: 2147483647;
+}
+
+.wst-reload-notice button {
+  background: #2563eb;
+  border: 0;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 12px;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.wst-reload-notice button:hover { background: #1d4ed8; transform: scale(1.04); }
+.wst-reload-notice button:active { transform: scale(.97); }
+
 @keyframes wst-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes wst-exit { from { opacity: 1; } to { opacity: 0; transform: translateY(-3px); } }

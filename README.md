@@ -60,7 +60,13 @@ WhatsApp 是 WhatsApp LLC 的商标。本项目与 WhatsApp、Meta 或 Chrome We
 
 ## 开发状态
 
-当前版本为 `0.3.1`。本版本增加了扩展热更新后的上下文失效保护，避免旧 WhatsApp 页面产生未捕获的 `Extension context invalidated` 错误；遇到扩展重新加载时，请刷新 WhatsApp 页面以重新连接。WhatsApp Web 的 DOM 结构会变化，消息选择器和发送逻辑仍需要在真实账号环境继续回归测试；中转站必须提供 HTTPS 的 OpenAI Chat Completions 兼容接口。发布到 Chrome Web Store 前还需要补充图标、端到端测试、服务条款和完整隐私政策。
+当前版本为 `0.3.2`。扩展更新后，已加载本版本的旧页面会停止后台调用和消息扫描，并显示“刷新页面”提示，避免未捕获的 `Extension context invalidated` 错误。消息和存储 API 同时兼容 Chrome 的 callback 与 Promise 返回形式，扩展重载时的拒绝 Promise 会被收口。普通后台连接失败不会被误判为扩展永久失效，暂停状态保存失败也不会显示成功。
+
+首次从 `0.3.0` 或 `0.3.1` 升级时，需要重新加载扩展，再刷新 WhatsApp，保护逻辑才会生效。Chrome 已记录的历史错误不会被代码自动清除；清除历史记录后，重新加载扩展并刷新 WhatsApp，再观察是否产生新错误。
+
+异常回归测试无需安装依赖：`node --test tests/context-lifecycle.test.cjs`。测试覆盖初始化、同步异常、异步回调异常、扫描停止、暂停状态存储失败和失效后的迟到响应；使用模拟 Chrome API 与最小 DOM，不替代真实 WhatsApp 账号中的端到端验证。
+
+WhatsApp Web 的 DOM 结构会变化，消息选择器和发送逻辑仍需要在真实账号环境继续回归测试；中转站必须提供 HTTPS 的 OpenAI Chat Completions 兼容接口。发布到 Chrome Web Store 前还需要补充图标、端到端测试、服务条款和完整隐私政策。
 
 ## License
 

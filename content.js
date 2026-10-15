@@ -16,6 +16,8 @@
     composerTranslated: "",
     composerWriting: false,
     contextInvalidated: false,
+    scanTimer: null,
+    observer: null,
   };
 
   const MUTED_CHATS_KEY = "openchatMutedChats";
@@ -46,7 +48,7 @@
   };
 
   function isContextInvalidated(error) {
-    return /extension context invalidated|context invalidated|receiving end does not exist/i.test(
+    return /extension context invalidated|context invalidated/i.test(
       String(error?.message || error || ""),
     );
   }
@@ -55,10 +57,25 @@
     if (state.contextInvalidated) return;
     state.contextInvalidated = true;
     state.settings = null;
+    state.observer?.disconnect();
+    clearInterval(state.scanTimer);
+    state.pending.clear();
     document.documentElement.dataset.openchatTranslator = "off";
-    document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle").forEach((element) => {
+    document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-status").forEach((element) => {
       element.remove();
     });
+    const notice = document.createElement("aside");
+    if (!document.body || document.querySelector(".wst-reload-notice")) return;
+    notice.className = "wst-reload-notice";
+    notice.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.textContent = "翻译扩展已更新 刷新 WhatsApp 后继续使用";
+    const reload = document.createElement("button");
+    reload.type = "button";
+    reload.textContent = "刷新页面";
+    reload.addEventListener("click", () => window.location.reload());
+    notice.append(text, reload);
+    document.body.appendChild(notice);
   }
 
   function extensionContextAvailable() {
@@ -69,26 +86,123 @@
     }
   }
 
-  function send(message) {
+  function safeStorageGet(key) {
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value || {});
+      };
+      const fail = (error) => {
+        if (settled) return;
+        if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
+        finish({});
+      };
       if (!extensionContextAvailable()) {
         markContextInvalidated();
-        resolve({ ok: false, error: "扩展已更新，请刷新 WhatsApp 页面" });
+        finish({});
         return;
       }
       try {
-        chrome.runtime.sendMessage(message, (response) => {
-          const runtimeError = chrome.runtime.lastError;
-          if (runtimeError) {
-            if (isContextInvalidated(runtimeError)) markContextInvalidated();
-            resolve({ ok: false, error: runtimeError.message });
-          } else {
-            resolve(response || { ok: false, error: "No response" });
+        const pending = chrome.storage.local.get(key, (result) => {
+          try {
+            const runtimeError = chrome.runtime.lastError;
+            if (!extensionContextAvailable() || isContextInvalidated(runtimeError)) {
+              markContextInvalidated();
+              finish({});
+            } else {
+              finish(result);
+            }
+          } catch (error) {
+            fail(error);
           }
         });
+        if (pending && typeof pending.then === "function") pending.then(finish, fail);
       } catch (error) {
-        if (isContextInvalidated(error)) markContextInvalidated();
-        resolve({ ok: false, error: error?.message || "后台通信失败" });
+        fail(error);
+      }
+    });
+  }
+
+  function safeStorageSet(value) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (success) => {
+        if (settled) return;
+        settled = true;
+        resolve(Boolean(success));
+      };
+      const fail = (error) => {
+        if (settled) return;
+        if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
+        finish(false);
+      };
+      if (!extensionContextAvailable()) {
+        markContextInvalidated();
+        finish(false);
+        return;
+      }
+      try {
+        const pending = chrome.storage.local.set(value, () => {
+          try {
+            const runtimeError = chrome.runtime.lastError;
+            if (!extensionContextAvailable() || isContextInvalidated(runtimeError)) {
+              markContextInvalidated();
+              finish(false);
+            } else {
+              finish(!runtimeError);
+            }
+          } catch (error) {
+            fail(error);
+          }
+        });
+        if (pending && typeof pending.then === "function") pending.then(() => finish(true), fail);
+      } catch (error) {
+        fail(error);
+      }
+    });
+  }
+
+  function send(message) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const fail = (error) => {
+        if (settled) return;
+        if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
+        finish({ ok: false, error: error?.message || "后台通信失败" });
+      };
+      if (!extensionContextAvailable()) {
+        markContextInvalidated();
+        finish({ ok: false, error: "扩展已更新，请刷新 WhatsApp 页面" });
+        return;
+      }
+      try {
+        const pending = chrome.runtime.sendMessage(message, (response) => {
+          try {
+            const runtimeError = chrome.runtime.lastError;
+            if (!extensionContextAvailable() || isContextInvalidated(runtimeError)) {
+              markContextInvalidated();
+              finish({ ok: false, error: "扩展已更新，请刷新 WhatsApp 页面" });
+            } else if (runtimeError) {
+              finish({ ok: false, error: runtimeError.message });
+            } else {
+              finish(response || { ok: false, error: "No response" });
+            }
+          } catch (error) {
+            fail(error);
+          }
+        });
+        if (pending && typeof pending.then === "function") pending.then((response) => {
+          if (response !== undefined) finish(response);
+        }, fail);
+      } catch (error) {
+        fail(error);
       }
     });
   }
@@ -148,7 +262,7 @@
     });
   }
 
-  async function refreshActiveChat() {
+  function refreshActiveChat() {
     const next = readActiveChat();
     if (next.key === state.activeChatKey) {
       if (next.label && next.label !== state.activeChatLabel) {
@@ -166,15 +280,13 @@
   }
 
   async function setCurrentChatMuted(muted) {
-    if (!state.activeChatKey) return false;
-    if (muted) state.mutedChats.add(state.activeChatKey);
-    else state.mutedChats.delete(state.activeChatKey);
-    try {
-      await chrome.storage.local.set({ [MUTED_CHATS_KEY]: Array.from(state.mutedChats).slice(-200) });
-    } catch (error) {
-      if (isContextInvalidated(error)) markContextInvalidated();
-      return false;
-    }
+    if (!state.activeChatKey || state.contextInvalidated) return false;
+    const nextMutedChats = new Set(state.mutedChats);
+    if (muted) nextMutedChats.add(state.activeChatKey);
+    else nextMutedChats.delete(state.activeChatKey);
+    const saved = await safeStorageSet({ [MUTED_CHATS_KEY]: Array.from(nextMutedChats).slice(-200) });
+    if (!saved || state.contextInvalidated) return false;
+    state.mutedChats = nextMutedChats;
     updateChatToggle();
     if (muted) removeAllTranslations();
     return true;
@@ -248,28 +360,36 @@
   }
 
   async function translateMessage(message, force = false) {
-    if (!state.settings?.enabled || currentChatMuted()) return;
-    const sourceText = textFromMessage(message);
-    if (!sourceText || sourceText.length > 5000) return;
-    const outgoing = isOutgoing(message);
-    if (outgoing && !state.settings.translateOutgoing) return;
-    const id = messageId(message, sourceText);
-    // Settings describe the user's language and the contact's language. Incoming
-    // messages therefore travel from contact -> user; outgoing drafts use user -> contact.
-    const source = outgoing ? state.settings.sourceLang : state.settings.targetLang;
-    const target = outgoing ? state.settings.targetLang : state.settings.sourceLang;
-    const previous = state.scanned.get(message);
-    if (!force && previous?.source === sourceText && previous.target === target && previous.translated) return;
-    const key = `${id}|${sourceText}|${source}|${target}`;
-    if (state.pending.has(key)) return;
-    state.pending.set(key, true);
-    const result = await send({ type: "translate", items: [{ text: sourceText, source, target, engine: state.settings.engine }] });
-    state.pending.delete(key);
-    if (result.ok && result.translations?.[0]) renderTranslation(message, result.translations[0], sourceText, target);
+    let key = "";
+    try {
+      if (!state.settings?.enabled || currentChatMuted()) return;
+      const sourceText = textFromMessage(message);
+      if (!sourceText || sourceText.length > 5000) return;
+      const outgoing = isOutgoing(message);
+      if (outgoing && !state.settings.translateOutgoing) return;
+      const id = messageId(message, sourceText);
+      // Settings describe the user's language and the contact's language. Incoming
+      // messages therefore travel from contact -> user; outgoing drafts use user -> contact.
+      const source = outgoing ? state.settings.sourceLang : state.settings.targetLang;
+      const target = outgoing ? state.settings.targetLang : state.settings.sourceLang;
+      const previous = state.scanned.get(message);
+      if (!force && previous?.source === sourceText && previous.target === target && previous.translated) return;
+      key = `${id}|${sourceText}|${source}|${target}`;
+      if (state.pending.has(key)) return;
+      state.pending.set(key, true);
+      const result = await send({ type: "translate", items: [{ text: sourceText, source, target, engine: state.settings.engine }] });
+      if (state.contextInvalidated) return;
+      if (result.ok && result.translations?.[0]) renderTranslation(message, result.translations[0], sourceText, target);
+    } catch (error) {
+      if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
+      else console.error("OpenChat Translator message translation failed", error);
+    } finally {
+      if (key) state.pending.delete(key);
+    }
   }
 
   function decorateMessage(message) {
-    if (!(message instanceof HTMLElement) || message.dataset.wstMessage === "true") return;
+    if (!state.settings?.enabled || state.contextInvalidated || !(message instanceof HTMLElement) || message.dataset.wstMessage === "true") return;
     const parentMessage = message.parentElement?.closest(messageSelectors.join(","));
     if (parentMessage && parentMessage !== message) return;
     const text = textFromMessage(message);
@@ -291,6 +411,7 @@
   }
 
   function scanMessages(root = document) {
+    if (!state.settings?.enabled || state.contextInvalidated) return;
     const selector = messageSelectors.join(",");
     if (root instanceof Element && root.matches(selector)) decorateMessage(root);
     root.querySelectorAll?.(selector).forEach(decorateMessage);
@@ -357,7 +478,7 @@
   async function translateComposer(sendAfter = false) {
     const composer = readComposer();
     const original = composerText(composer);
-    if (!composer || !original || state.composerBusy || currentChatMuted()) return false;
+    if (!state.settings?.enabled || state.contextInvalidated || !composer || !original || state.composerBusy || currentChatMuted()) return false;
     state.composerBusy = true;
     try {
       if (state.composerTranslated && original === state.composerTranslated) {
@@ -370,18 +491,23 @@
         type: "translate",
         items: [{ text: original, source: state.settings.sourceLang, target: state.settings.targetLang, engine: state.settings.engine }],
       });
-      if (!result.ok || !result.translations?.[0]) return false;
+      if (state.contextInvalidated || !result.ok || !result.translations?.[0]) return false;
       state.composerOriginal = original;
       state.composerTranslated = result.translations[0];
       const written = await writeComposer(composer, state.composerTranslated);
-      if (written && sendAfter) setTimeout(() => sendComposer(composer), 80);
+      if (written && sendAfter && !state.contextInvalidated) setTimeout(() => sendComposer(composer), 80);
       return written;
+    } catch (error) {
+      if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
+      else console.error("OpenChat Translator composer translation failed", error);
+      return false;
     } finally {
       state.composerBusy = false;
     }
   }
 
   function sendComposer(composer) {
+    if (!state.settings?.enabled || state.contextInvalidated) return false;
     const sendButton = document.querySelector("button[data-testid='send'], button[aria-label='Send'], button[title='Send']");
     if (sendButton && !sendButton.disabled) {
       sendButton.click();
@@ -392,6 +518,7 @@
   }
 
   function setComposerStatus(footer, text, error = false) {
+    if (state.contextInvalidated) return;
     let status = footer.querySelector(".wst-compose-status");
     if (!status) {
       status = document.createElement("span");
@@ -405,6 +532,7 @@
   }
 
   function decorateComposer() {
+    if (!state.settings?.enabled || state.contextInvalidated) return;
     const composer = readComposer();
     const footer = composer?.closest("footer") || composer?.parentElement;
     if (!composer || !footer) return;
@@ -439,8 +567,8 @@
       chatToggle.type = "button";
       chatToggle.addEventListener("click", async () => {
         const muted = !currentChatMuted();
-        await setCurrentChatMuted(muted);
-        setComposerStatus(footer, muted ? "已暂停当前对话翻译" : "已恢复当前对话翻译");
+        const saved = await setCurrentChatMuted(muted);
+        setComposerStatus(footer, saved ? (muted ? "已暂停当前对话翻译" : "已恢复当前对话翻译") : "暂停状态保存失败，请重试", !saved);
       });
       footer.appendChild(chatToggle);
     }
@@ -455,6 +583,7 @@
         }
       });
       composer.addEventListener("keydown", (event) => {
+        if (!state.settings?.enabled || state.contextInvalidated) return;
         if (event.key === "Enter" && event.altKey) {
           event.preventDefault();
           translateComposer(state.settings.sendAfterTranslate);
@@ -466,6 +595,7 @@
 
   async function loadSettings() {
     const result = await send({ type: "getSettings" });
+    if (state.contextInvalidated) return;
     state.settings = publicSettings(result.settings || {
       enabled: true,
       engine: "google",
@@ -481,12 +611,9 @@
   }
 
   async function loadMutedChats() {
-    try {
-      const stored = await chrome.storage.local.get(MUTED_CHATS_KEY);
-      state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
-    } catch (error) {
-      if (isContextInvalidated(error)) markContextInvalidated();
-    }
+    const stored = await safeStorageGet(MUTED_CHATS_KEY);
+    if (state.contextInvalidated) return;
+    state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
   }
 
   const observer = new MutationObserver((mutations) => {
@@ -499,6 +626,7 @@
     refreshActiveChat();
     decorateComposer();
   });
+  state.observer = observer;
 
   document.addEventListener("pointerover", (event) => {
     if (!state.settings?.enabled) return;
@@ -506,8 +634,8 @@
     if (target) decorateMessage(target);
   }, { passive: true });
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local") return;
+  function onStorageChanged(changes, area) {
+    if (state.contextInvalidated || area !== "local") return;
     if (changes[MUTED_CHATS_KEY]) {
       state.mutedChats = new Set(Array.isArray(changes[MUTED_CHATS_KEY].newValue) ? changes[MUTED_CHATS_KEY].newValue : []);
       updateChatToggle();
@@ -519,10 +647,15 @@
       scanMessages();
       decorateComposer();
     }
-  });
+  }
 
   (async () => {
     try {
+      if (!extensionContextAvailable()) {
+        markContextInvalidated();
+        return;
+      }
+      chrome.storage.onChanged.addListener(onStorageChanged);
       await loadSettings();
       if (state.contextInvalidated) return;
       await loadMutedChats();
@@ -531,8 +664,13 @@
       scanMessages();
       decorateComposer();
       observer.observe(document.body, { childList: true, subtree: true });
-      setInterval(() => {
-        if (!state.settings?.enabled || state.contextInvalidated) return;
+      state.scanTimer = setInterval(() => {
+        if (state.contextInvalidated) return;
+        if (!extensionContextAvailable()) {
+          markContextInvalidated();
+          return;
+        }
+        if (!state.settings?.enabled) return;
         refreshActiveChat();
         scanMessages();
         decorateComposer();
