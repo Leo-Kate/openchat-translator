@@ -15,6 +15,7 @@
     composerOriginal: "",
     composerTranslated: "",
     composerWriting: false,
+    contextInvalidated: false,
   };
 
   const MUTED_CHATS_KEY = "openchatMutedChats";
@@ -44,12 +45,51 @@
     auto: "Auto",
   };
 
+  function isContextInvalidated(error) {
+    return /extension context invalidated|context invalidated|receiving end does not exist/i.test(
+      String(error?.message || error || ""),
+    );
+  }
+
+  function markContextInvalidated() {
+    if (state.contextInvalidated) return;
+    state.contextInvalidated = true;
+    state.settings = null;
+    document.documentElement.dataset.openchatTranslator = "off";
+    document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle").forEach((element) => {
+      element.remove();
+    });
+  }
+
+  function extensionContextAvailable() {
+    try {
+      return !state.contextInvalidated && typeof chrome !== "undefined" && Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  }
+
   function send(message) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
-        else resolve(response || { ok: false, error: "No response" });
-      });
+      if (!extensionContextAvailable()) {
+        markContextInvalidated();
+        resolve({ ok: false, error: "扩展已更新，请刷新 WhatsApp 页面" });
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            if (isContextInvalidated(runtimeError)) markContextInvalidated();
+            resolve({ ok: false, error: runtimeError.message });
+          } else {
+            resolve(response || { ok: false, error: "No response" });
+          }
+        });
+      } catch (error) {
+        if (isContextInvalidated(error)) markContextInvalidated();
+        resolve({ ok: false, error: error?.message || "后台通信失败" });
+      }
     });
   }
 
@@ -129,7 +169,12 @@
     if (!state.activeChatKey) return false;
     if (muted) state.mutedChats.add(state.activeChatKey);
     else state.mutedChats.delete(state.activeChatKey);
-    await chrome.storage.local.set({ [MUTED_CHATS_KEY]: Array.from(state.mutedChats).slice(-200) });
+    try {
+      await chrome.storage.local.set({ [MUTED_CHATS_KEY]: Array.from(state.mutedChats).slice(-200) });
+    } catch (error) {
+      if (isContextInvalidated(error)) markContextInvalidated();
+      return false;
+    }
     updateChatToggle();
     if (muted) removeAllTranslations();
     return true;
@@ -436,8 +481,12 @@
   }
 
   async function loadMutedChats() {
-    const stored = await chrome.storage.local.get(MUTED_CHATS_KEY);
-    state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
+    try {
+      const stored = await chrome.storage.local.get(MUTED_CHATS_KEY);
+      state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
+    } catch (error) {
+      if (isContextInvalidated(error)) markContextInvalidated();
+    }
   }
 
   const observer = new MutationObserver((mutations) => {
@@ -473,17 +522,24 @@
   });
 
   (async () => {
-    await loadSettings();
-    await loadMutedChats();
-    await refreshActiveChat();
-    scanMessages();
-    decorateComposer();
-    observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(() => {
-      if (!state.settings?.enabled) return;
-      refreshActiveChat();
+    try {
+      await loadSettings();
+      if (state.contextInvalidated) return;
+      await loadMutedChats();
+      if (state.contextInvalidated) return;
+      await refreshActiveChat();
       scanMessages();
       decorateComposer();
-    }, 1500);
+      observer.observe(document.body, { childList: true, subtree: true });
+      setInterval(() => {
+        if (!state.settings?.enabled || state.contextInvalidated) return;
+        refreshActiveChat();
+        scanMessages();
+        decorateComposer();
+      }, 1500);
+    } catch (error) {
+      if (isContextInvalidated(error)) markContextInvalidated();
+      else console.error("OpenChat Translator initialization failed", error);
+    }
   })();
 })();

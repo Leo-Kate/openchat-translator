@@ -60,7 +60,7 @@ WhatsApp 是 WhatsApp LLC 的商标。本项目与 WhatsApp、Meta 或 Chrome We
 
 ## 开发状态
 
-当前版本为 `0.3.0`。WhatsApp Web 的 DOM 结构会变化，消息选择器和发送逻辑仍需要在真实账号环境继续回归测试；中转站必须提供 HTTPS 的 OpenAI Chat Completions 兼容接口。发布到 Chrome Web Store 前还需要补充图标、端到端测试、服务条款和完整隐私政策。
+当前版本为 `0.3.1`。本版本增加了扩展热更新后的上下文失效保护，避免旧 WhatsApp 页面产生未捕获的 `Extension context invalidated` 错误；遇到扩展重新加载时，请刷新 WhatsApp 页面以重新连接。WhatsApp Web 的 DOM 结构会变化，消息选择器和发送逻辑仍需要在真实账号环境继续回归测试；中转站必须提供 HTTPS 的 OpenAI Chat Completions 兼容接口。发布到 Chrome Web Store 前还需要补充图标、端到端测试、服务条款和完整隐私政策。
 
 ## License
 
