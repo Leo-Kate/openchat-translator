@@ -7,6 +7,7 @@
   const state = {
     settings: null,
     scanned: new WeakMap(),
+    failures: new WeakMap(),
     pending: new Map(),
     mutedChats: new Set(),
     activeChatKey: "",
@@ -15,6 +16,15 @@
     composerOriginal: "",
     composerTranslated: "",
     composerWriting: false,
+    composerRevision: 0,
+    translationEpoch: 0,
+    autoQueue: new Set(),
+    autoActive: 0,
+    autoTimer: null,
+    autoOverflow: false,
+    toolbar: null,
+    observedMessages: new WeakSet(),
+    visibleMessages: new WeakSet(),
     contextInvalidated: false,
     scanTimer: null,
     domTimer: null,
@@ -23,6 +33,8 @@
   };
 
   const MUTED_CHATS_KEY = "openchatMutedChats";
+  const MAX_AUTO_ACTIVE = 2;
+  const MAX_AUTO_QUEUE = 32;
 
   const messageSelectors = [
     "[data-testid='msg-container']",
@@ -60,11 +72,13 @@
     state.contextInvalidated = true;
     state.settings = null;
     state.observer?.disconnect();
+    visibilityObserver?.disconnect();
     clearInterval(state.scanTimer);
     cancelDomUpdate();
+    cancelAutomaticTranslations();
     state.pending.clear();
     document.documentElement.dataset.openchatTranslator = "off";
-    document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-status").forEach((element) => {
+    document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-tools, .wst-compose-status").forEach((element) => {
       element.remove();
     });
     const notice = document.createElement("aside");
@@ -213,7 +227,7 @@
   function publicSettings(settings) {
     if (!settings) return settings;
     const { apiSettings: _apiSettings, ...safeSettings } = settings;
-    return safeSettings;
+    return { autoDetectIncoming: true, ...safeSettings };
   }
 
   function normalizeChatKey(value) {
@@ -279,6 +293,7 @@
       return;
     }
     state.activeChatKey = next.key;
+    cancelAutomaticTranslations();
     state.activeChatLabel = next.label;
     state.composerOriginal = "";
     state.composerTranslated = "";
@@ -294,6 +309,7 @@
     const saved = await safeStorageSet({ [MUTED_CHATS_KEY]: Array.from(nextMutedChats).slice(-200) });
     if (!saved || state.contextInvalidated) return false;
     state.mutedChats = nextMutedChats;
+    cancelAutomaticTranslations();
     updateChatToggle();
     if (muted) removeAllTranslations();
     else scheduleDomUpdate(document);
@@ -301,15 +317,38 @@
   }
 
   function textFromMessage(message) {
-    const candidates = Array.from(message.querySelectorAll(
-      "[data-testid='selectable-text'], .selectable-text, span[dir='auto'], span[dir='ltr'], span[dir='rtl']",
-    ));
-    const text = candidates
-      .map((element) => element.innerText || element.textContent || "")
-      .map((value) => value.replace(/\s+/g, " ").trim())
-      .filter((value) => value && !/^\d{1,2}:\d{2}$/.test(value))
-      .sort((left, right) => right.length - left.length)[0] || message.innerText || "";
-    return text.replace(/\s+/g, " ").trim();
+    const textSelector = "[data-testid='selectable-text'], .selectable-text, [data-testid='msg-text']";
+    const excluded = `${ownedSelector}, [data-testid='quoted-message'], [data-testid='quoted-text'], [data-testid='msg-meta'], [data-testid='msg-time'], [data-testid='link-preview'], [data-testid='document-title'], [data-testid='document-message'], [data-testid='audio-message'], [data-testid='media-info'], time, button`;
+    const cleanText = (element) => {
+      if (element.closest(excluded)) return "";
+      const copy = element.cloneNode(true);
+      copy.querySelectorAll(excluded).forEach((node) => node.remove());
+      return (copy.textContent || "").replace(/\s+/g, " ").trim();
+    };
+    const isNonTranslatableText = (value) => {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      if (!text) return true;
+      // A standalone link is already readable and often contains a long slug.
+      if (!text.replace(/(?:(?:https?|ftp):\/\/|www\.)[^\s<>]+/gi, "").replace(/[\s,;，；。()（）<>]+/g, "")) return true;
+      if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?$/i.test(text)) return true;
+      // Common wallet addresses and transaction hashes are identifiers, not prose.
+      if (/^0x[a-f0-9]{40}$/i.test(text)) return true;
+      if (/^(?:bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,62})$/.test(text)) return true;
+      if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(text)) return true;
+      if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text)) return true;
+      if (/^[a-f0-9]{64}$/i.test(text)) return true;
+      if (/^\d{1,2}:\d{2}(?:\s*[ap]m)?$/i.test(text)) return true;
+      if (/^\d+(?:[.,]\d+)?\s*(?:B|KB|MB|GB|TB)$/i.test(text)) return true;
+      return false;
+    };
+    const candidates = Array.from(message.querySelectorAll(textSelector));
+    // Only WhatsApp's message/caption text is authoritative. Never fall back to
+    // the whole bubble: media bubbles contain timestamps and our own controls.
+    if (candidates.length) {
+      const text = candidates.map(cleanText).filter(Boolean).sort((a, b) => b.length - a.length)[0] || "";
+      return isNonTranslatableText(text) ? "" : text;
+    }
+    return "";
   }
 
   function isOutgoing(message) {
@@ -336,7 +375,7 @@
   }
 
   function renderTranslation(message, translated, source, target) {
-    removeTranslation(message);
+    message.querySelectorAll(".wst-translation-row").forEach((row) => row.remove());
     const row = document.createElement("div");
     row.className = "wst-translation-row";
     row.dataset.wstTranslation = "true";
@@ -377,19 +416,33 @@
       const outgoing = isOutgoing(message);
       if (outgoing && !state.settings.translateOutgoing) return;
       const id = messageId(message, sourceText);
+      const settings = state.settings;
+      const epoch = state.translationEpoch;
       // Settings describe the user's language and the contact's language. Incoming
       // messages therefore travel from contact -> user; outgoing drafts use user -> contact.
-      const source = outgoing ? state.settings.sourceLang : state.settings.targetLang;
-      const target = outgoing ? state.settings.targetLang : state.settings.sourceLang;
+      const userLanguage = state.settings.sourceLang === "auto" ? "zh-CN" : state.settings.sourceLang;
+      const contactLanguage = state.settings.targetLang || "auto";
+      const source = outgoing ? userLanguage : (state.settings.autoDetectIncoming !== false ? "auto" : contactLanguage);
+      const target = outgoing ? contactLanguage : userLanguage;
+      // There is no safe target for an outgoing translation when the contact
+      // language is set to auto. Incoming messages can still be auto-detected.
+      if (outgoing && contactLanguage === "auto") return;
       const previous = state.scanned.get(message);
-      if (!force && previous?.source === sourceText && previous.target === target && previous.translated) return;
-      key = `${id}|${sourceText}|${source}|${target}`;
+      if (!force && previous?.source === sourceText && previous.target === target && previous.sourceLanguage === source && previous.engine === settings.engine && previous.translated) return;
+      const failed = state.failures.get(message);
+      if (!force && failed?.text === sourceText && failed.engine === settings.engine && Date.now() - failed.at < 30000) return;
+      key = `${epoch}|${id}|${sourceText}|${source}|${target}`;
       if (state.pending.has(key)) return;
       state.pending.set(key, true);
       ownsPending = true;
       const result = await send({ type: "translate", items: [{ text: sourceText, source, target, engine: state.settings.engine }] });
       if (state.contextInvalidated || !state.settings?.enabled || currentChatMuted() || message.isConnected === false) return;
-      if (result.ok && result.translations?.[0]) renderTranslation(message, result.translations[0], sourceText, target);
+      if (state.translationEpoch !== epoch || state.settings !== settings || messageId(message, sourceText) !== id || textFromMessage(message) !== sourceText) return;
+      if (result.ok && result.translations?.[0]) {
+        state.failures.delete(message);
+        renderTranslation(message, result.translations[0], sourceText, target);
+        Object.assign(state.scanned.get(message), { sourceLanguage: source, engine: settings.engine });
+      } else state.failures.set(message, { text: sourceText, engine: settings.engine, at: Date.now() });
     } catch (error) {
       if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
       else console.error("OpenChat Translator message translation failed", error);
@@ -398,14 +451,82 @@
     }
   }
 
+  function cancelAutomaticTranslations() {
+    state.translationEpoch++;
+    state.autoQueue.clear();
+    state.autoOverflow = false;
+    clearTimeout(state.autoTimer);
+    state.autoTimer = null;
+  }
+
+  function pumpAutomaticTranslations() {
+    if (state.autoTimer !== null || state.autoActive >= MAX_AUTO_ACTIVE ||
+        !state.settings?.enabled || !state.settings.autoTranslate || state.contextInvalidated || document.hidden || currentChatMuted()) return;
+    if (!state.autoQueue.size) {
+      if (state.autoOverflow && state.autoActive === 0) {
+        // Overflow is deferred, not forgotten. Refill only from still-visible
+        // decorated messages after the bounded queue drains; no extra node list.
+        state.autoTimer = setTimeout(() => {
+          state.autoTimer = null;
+          state.autoOverflow = false;
+          if (!state.settings?.enabled || !state.settings.autoTranslate || document.hidden || currentChatMuted()) return;
+          document.querySelectorAll("[data-wst-message='true']").forEach((message) => {
+            if (!visibilityObserver || state.visibleMessages.has(message)) decorateMessage(message);
+          });
+        }, 80);
+      }
+      return;
+    }
+    // Yield between small groups, and never flood a slow provider with all of
+    // the mounted conversation at once. Manual translation remains immediate.
+    state.autoTimer = setTimeout(() => {
+      state.autoTimer = null;
+      if (!state.settings?.enabled || !state.settings.autoTranslate || state.contextInvalidated || document.hidden || currentChatMuted()) return;
+      while (state.autoActive < MAX_AUTO_ACTIVE && state.autoQueue.size) {
+        const message = state.autoQueue.values().next().value;
+        state.autoQueue.delete(message);
+        if (message.isConnected === false || (visibilityObserver && !state.visibleMessages.has(message))) continue;
+        state.autoActive++;
+        translateMessage(message).finally(() => {
+          state.autoActive--;
+          pumpAutomaticTranslations();
+        });
+      }
+    }, 0);
+  }
+
+  function queueAutomaticTranslation(message, text) {
+    if (document.hidden || currentChatMuted() || (visibilityObserver && !state.visibleMessages.has(message))) return;
+    const outgoing = isOutgoing(message);
+    if (outgoing && (!state.settings.translateOutgoing || !state.settings.targetLang || state.settings.targetLang === "auto")) return;
+    const userLanguage = state.settings.sourceLang === "auto" ? "zh-CN" : state.settings.sourceLang;
+    const source = outgoing ? userLanguage : (state.settings.autoDetectIncoming !== false ? "auto" : state.settings.targetLang);
+    const target = outgoing ? state.settings.targetLang : userLanguage;
+    const previous = state.scanned.get(message);
+    if (previous?.source === text && previous.sourceLanguage === source && previous.target === target && previous.engine === state.settings.engine && previous.translated) return;
+    const failed = state.failures.get(message);
+    if (failed?.text === text && failed.engine === state.settings.engine && Date.now() - failed.at < 30000) return;
+    if (state.autoQueue.size >= MAX_AUTO_QUEUE) {
+      state.autoOverflow = true;
+      return;
+    }
+    state.autoQueue.add(message);
+    pumpAutomaticTranslations();
+  }
+
   function decorateMessage(message) {
     if (!state.settings?.enabled || state.contextInvalidated || !(message instanceof HTMLElement)) return;
     const parentMessage = message.parentElement?.closest(messageSelectors.join(","));
     if (parentMessage && parentMessage !== message) return;
     const text = textFromMessage(message);
-    if (!text) return;
+    if (!text) {
+      message.querySelectorAll(".wst-translation-row, .wst-message-action").forEach((node) => node.remove());
+      delete message.dataset.wstMessage;
+      state.scanned.delete(message);
+      return;
+    }
     if (message.dataset.wstMessage === "true") {
-      if (state.settings.autoTranslate) translateMessage(message);
+      if (state.settings.autoTranslate) queueAutomaticTranslation(message, text);
       return;
     }
     message.dataset.wstMessage = "true";
@@ -421,18 +542,52 @@
       translateMessage(message, true);
     });
     message.appendChild(action);
-    if (state.settings.autoTranslate) translateMessage(message);
+    if (state.settings.autoTranslate) queueAutomaticTranslation(message, text);
   }
 
   function scanMessages(root = document) {
     if (!state.settings?.enabled || state.contextInvalidated) return;
     const selector = messageSelectors.join(",");
-    if (root instanceof Element && root.matches(selector)) decorateMessage(root);
-    root.querySelectorAll?.(selector).forEach(decorateMessage);
+    if (root instanceof Element && root.matches(selector)) watchMessage(root);
+    root.querySelectorAll?.(selector).forEach(watchMessage);
+  }
+
+  // Native visibility tracking batches geometry work and avoids translating the
+  // entire mounted history. Weak sets do not keep old conversations alive.
+  const visibilityObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        state.visibleMessages.add(entry.target);
+        decorateMessage(entry.target);
+      } else {
+        state.visibleMessages.delete(entry.target);
+        state.autoQueue.delete(entry.target);
+      }
+    }
+  }, { rootMargin: "160px 0px" }) : null;
+
+  function watchMessage(message) {
+    if (message.parentElement?.closest(messageSelectors.join(","))) return;
+    if (!visibilityObserver) return decorateMessage(message);
+    if (!state.observedMessages.has(message)) {
+      state.observedMessages.add(message);
+      visibilityObserver.observe(message);
+    } else if (state.visibleMessages.has(message)) decorateMessage(message);
+  }
+
+  function releaseMessages(root) {
+    const release = (message) => {
+      visibilityObserver?.unobserve(message);
+      state.observedMessages.delete(message);
+      state.visibleMessages.delete(message);
+      state.autoQueue.delete(message);
+    };
+    if (root instanceof Element && root.matches(messageSelectors.join(","))) release(root);
+    root.querySelectorAll?.(messageSelectors.join(",")).forEach(release);
   }
 
   function readComposer() {
-    return document.querySelector("footer [contenteditable='true'], [role='textbox'][contenteditable='true']");
+    return document.querySelector("footer [contenteditable='true']");
   }
 
   function composerText(composer) {
@@ -493,6 +648,12 @@
     const composer = readComposer();
     const original = composerText(composer);
     if (!state.settings?.enabled || state.contextInvalidated || !composer || !original || state.composerBusy || currentChatMuted()) return false;
+    const settings = state.settings;
+    const chat = readActiveChat();
+    const revision = state.composerRevision;
+    const stillCurrent = (text) => !state.contextInvalidated && state.settings === settings && settings.enabled &&
+      !currentChatMuted() && composer.isConnected !== false && readComposer() === composer &&
+      readActiveChat().key === chat.key && readActiveChat().label === chat.label && state.composerRevision === revision && composerText(composer) === text;
     state.composerBusy = true;
     try {
       if (state.composerTranslated && original === state.composerTranslated) {
@@ -503,13 +664,21 @@
       }
       const result = await send({
         type: "translate",
-        items: [{ text: original, source: state.settings.sourceLang, target: state.settings.targetLang, engine: state.settings.engine }],
+        items: [{
+          text: original,
+          source: state.settings.sourceLang === "auto" ? "zh-CN" : state.settings.sourceLang,
+          target: state.settings.targetLang,
+          engine: state.settings.engine,
+        }],
       });
-      if (state.contextInvalidated || !result.ok || !result.translations?.[0]) return false;
+      if (!result.ok || !result.translations?.[0] || !stillCurrent(original)) return false;
       state.composerOriginal = original;
       state.composerTranslated = result.translations[0];
       const written = await writeComposer(composer, state.composerTranslated);
-      if (written && sendAfter && !state.contextInvalidated) setTimeout(() => sendComposer(composer), 80);
+      if (written && sendAfter) {
+        const translated = state.composerTranslated;
+        setTimeout(() => { if (stillCurrent(translated)) sendComposer(composer); }, 80);
+      }
       return written;
     } catch (error) {
       if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
@@ -521,7 +690,7 @@
   }
 
   function sendComposer(composer) {
-    if (!state.settings?.enabled || state.contextInvalidated) return false;
+    if (!state.settings?.enabled || state.contextInvalidated || currentChatMuted() || composer.isConnected === false || readComposer() !== composer) return false;
     const sendButton = document.querySelector("button[data-testid='send'], button[aria-label='Send'], button[title='Send']");
     if (sendButton && !sendButton.disabled) {
       sendButton.click();
@@ -549,32 +718,49 @@
     if (!state.settings?.enabled || state.contextInvalidated) return;
     const composer = readComposer();
     const footer = composer?.closest("footer") || composer?.parentElement;
-    if (!composer || !footer) return;
-    if (getComputedStyle(footer).position === "static") footer.style.position = "relative";
-    let action = footer.querySelector(".wst-compose-action");
+    if (!composer || !footer) {
+      state.toolbar?.remove();
+      state.toolbar = null;
+      return;
+    }
+    let toolbar = state.toolbar;
+    if (!toolbar || toolbar.nextElementSibling !== footer) {
+      toolbar?.remove();
+      toolbar = document.createElement("div");
+      toolbar.className = "wst-compose-tools";
+      toolbar.setAttribute("role", "toolbar");
+      toolbar.setAttribute("aria-label", "聊天翻译");
+      footer.before(toolbar);
+      state.toolbar = toolbar;
+    }
+    let action = toolbar.querySelector(".wst-compose-action");
     if (!action) {
       action = document.createElement("button");
       action.className = "wst-compose-action";
       action.type = "button";
-      action.textContent = "翻译";
+      action.textContent = "翻译草稿";
       action.title = "翻译草稿，再次点击恢复原文";
       action.setAttribute("aria-label", "翻译草稿，再次点击恢复原文");
       action.addEventListener("click", async () => {
         if (state.composerBusy || currentChatMuted()) return;
+        if (!composerText(readComposer())) {
+          setComposerStatus(toolbar, "请先输入需要翻译的文字");
+          return;
+        }
         action.disabled = true;
         action.textContent = "…";
-        setComposerStatus(footer, "正在翻译草稿");
-        const restoring = state.composerTranslated && composerText(composer) === state.composerTranslated;
+        setComposerStatus(toolbar, "正在翻译草稿");
+        const restoring = state.composerTranslated && composerText(readComposer()) === state.composerTranslated;
         const written = await translateComposer(false);
-        action.textContent = "翻译";
+        action.textContent = "翻译草稿";
         updateChatToggle();
-        if (written) setComposerStatus(footer, restoring ? "已恢复原文" : "已写入译文");
-        else setComposerStatus(footer, "翻译失败，请检查设置或网络", true);
+        if (written) setComposerStatus(toolbar, restoring ? "已恢复原文" : "已写入译文");
+        else setComposerStatus(toolbar, "草稿已更改或翻译未完成，请重试", true);
       });
-      footer.appendChild(action);
+      toolbar.appendChild(action);
     }
 
-    let chatToggle = footer.querySelector(".wst-chat-toggle");
+    let chatToggle = toolbar.querySelector(".wst-chat-toggle");
     if (!chatToggle) {
       chatToggle = document.createElement("button");
       chatToggle.className = "wst-chat-toggle";
@@ -582,15 +768,16 @@
       chatToggle.addEventListener("click", async () => {
         const muted = !currentChatMuted();
         const saved = await setCurrentChatMuted(muted);
-        setComposerStatus(footer, saved ? (muted ? "已暂停当前对话翻译" : "已恢复当前对话翻译") : "暂停状态保存失败，请重试", !saved);
+        setComposerStatus(toolbar, saved ? (muted ? "已暂停当前对话翻译" : "已恢复当前对话翻译") : "暂停状态保存失败，请重试", !saved);
       });
-      footer.appendChild(chatToggle);
+      toolbar.appendChild(chatToggle);
     }
 
     if (!state.boundComposers.has(composer)) {
       state.boundComposers.add(composer);
       composer.addEventListener("input", () => {
         if (state.composerWriting) return;
+        state.composerRevision++;
         if (state.composerTranslated && composerText(composer) !== state.composerTranslated) {
           state.composerOriginal = "";
           state.composerTranslated = "";
@@ -616,6 +803,7 @@
       sourceLang: "zh-CN",
       targetLang: "en",
       autoTranslate: true,
+      autoDetectIncoming: true,
       translateOutgoing: true,
       sendAfterTranslate: false,
       translationColor: "#2563eb",
@@ -630,7 +818,7 @@
     state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
   }
 
-  const ownedSelector = ".wst-translation-row, .wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-status, .wst-reload-notice";
+  const ownedSelector = ".wst-translation-row, .wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-tools, .wst-compose-status, .wst-reload-notice";
 
   function nodeElement(node) {
     return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
@@ -675,6 +863,9 @@
       if (isOwnedNode(mutation.target) || target?.closest("[contenteditable='true']")) continue;
       const changed = [...mutation.addedNodes, ...mutation.removedNodes];
       if (mutation.type === "childList" && changed.every(isOwnedNode)) continue;
+      for (const node of mutation.removedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE && node.isConnected === false && !isOwnedNode(node)) releaseMessages(node);
+      }
       scheduleDomUpdate();
       const message = target?.closest(messageSelectors.join(","));
       if (message) scheduleDomUpdate(message);
@@ -686,7 +877,10 @@
   state.observer = observer;
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) cancelDomUpdate();
+    if (document.hidden) {
+      cancelDomUpdate();
+      cancelAutomaticTranslations();
+    }
     else scheduleDomUpdate(document);
   });
 
@@ -700,6 +894,7 @@
     if (state.contextInvalidated || area !== "local") return;
     if (changes[MUTED_CHATS_KEY]) {
       state.mutedChats = new Set(Array.isArray(changes[MUTED_CHATS_KEY].newValue) ? changes[MUTED_CHATS_KEY].newValue : []);
+      cancelAutomaticTranslations();
       updateChatToggle();
       if (currentChatMuted()) removeAllTranslations();
       else scheduleDomUpdate(document);
@@ -708,6 +903,12 @@
       state.settings = publicSettings(changes.openchatSettings.newValue);
       document.documentElement.dataset.openchatTranslator = state.settings?.enabled ? "on" : "off";
       cancelDomUpdate();
+      cancelAutomaticTranslations();
+      if (!state.settings?.enabled) {
+        visibilityObserver?.disconnect();
+        state.observedMessages = new WeakSet();
+        state.visibleMessages = new WeakSet();
+      }
       scheduleDomUpdate(document);
     }
   }

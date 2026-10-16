@@ -13,6 +13,7 @@ const DEFAULTS = {
   engine: "google",
   sourceLang: "zh-CN",
   targetLang: "en",
+  autoDetectIncoming: true,
   autoTranslate: true,
   translateOutgoing: true,
   sendAfterTranslate: false,
@@ -52,7 +53,7 @@ const KNOWN_ORIGINS = new Set([
 ]);
 
 const $ = (id) => document.getElementById(id);
-const fields = ["enabled", "engine", "sourceLang", "targetLang", "autoTranslate", "translateOutgoing", "sendAfterTranslate", "showOriginal", "translationColor", "fontSize"];
+const fields = ["enabled", "engine", "sourceLang", "targetLang", "autoDetectIncoming", "autoTranslate", "translateOutgoing", "sendAfterTranslate", "showOriginal", "translationColor", "fontSize"];
 let currentSettings = { ...DEFAULTS, apiSettings: DEFAULT_API_SETTINGS };
 
 function mergeApiSettings(stored = {}) {
@@ -63,7 +64,9 @@ function mergeApiSettings(stored = {}) {
 }
 
 function mergeSettings(stored = {}) {
-  return { ...DEFAULTS, ...stored, apiSettings: mergeApiSettings(stored.apiSettings) };
+  const settings = { ...DEFAULTS, ...stored, apiSettings: mergeApiSettings(stored.apiSettings) };
+  if (settings.sourceLang === "auto") settings.sourceLang = "zh-CN";
+  return settings;
 }
 
 function send(message) {
@@ -183,7 +186,7 @@ async function testProvider() {
 }
 
 function populateLanguages() {
-  $("sourceLang").replaceChildren(...LANGUAGES.map(([value, label]) => new Option(label, value)));
+  $("sourceLang").replaceChildren(...LANGUAGES.filter(([value]) => value !== "auto").map(([value, label]) => new Option(label, value)));
   $("targetLang").replaceChildren(...LANGUAGES.filter(([value]) => value !== "auto").map(([value, label]) => new Option(label, value)));
 }
 

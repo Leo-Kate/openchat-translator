@@ -18,6 +18,7 @@
   <h1>OpenChat 浏览器性能回归</h1>
   <p>选择项目中的 content.js 运行测试 使用真实浏览器 DOM 和模拟翻译数据 不读取聊天 不访问翻译服务</p>
   <label>待测脚本 <input id="source" type="file" accept=".js"></label>
+  <label>样式（可选 先选择 content.css） <input id="styles" type="file" accept=".css"></label>
   <p id="status" role="status">等待选择脚本</p>
   <pre id="result"></pre>
 </main>
@@ -33,7 +34,8 @@
     output.textContent = "";
     status.textContent = "正在运行回归测试";
     try {
-      const results = await runOpenChatPerformanceTests(await file.text());
+      const stylesheet = document.querySelector("#styles").files[0];
+      const results = await runOpenChatPerformanceTests(await file.text(), stylesheet ? await stylesheet.text() : "");
       status.textContent = `${results.passed} / ${results.total} 项通过`;
       output.textContent = JSON.stringify(results, null, 2);
     } catch (error) {

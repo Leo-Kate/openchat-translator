@@ -25,7 +25,7 @@
       <div class="panel-heading"><span>语言对</span><span class="status-dot" id="liveDot"></span></div>
       <div class="pair-grid">
         <label>我的语言<select id="sourceLang"></select></label>
-        <label>联系人语言<select id="targetLang"></select></label>
+        <label>回复客户用语<select id="targetLang"></select></label>
       </div>
       <div class="swap-row"><button class="ghost-button" id="swapLang" type="button" title="交换语言">交换语言</button><span id="cacheStats">缓存 0</span></div>
     </section>
@@ -49,6 +49,7 @@
 
     <section class="panel stagger" style="--delay: 120ms">
       <div class="panel-heading"><span>对话行为</span></div>
+      <label class="check-row"><input id="autoDetectIncoming" type="checkbox"><span>自动检测客户语言并翻译为我的语言</span></label>
       <label class="check-row"><input id="autoTranslate" type="checkbox"><span>自动翻译收到的消息</span></label>
       <label class="check-row"><input id="translateOutgoing" type="checkbox"><span>按请求翻译发出的消息</span></label>
       <label class="check-row"><input id="sendAfterTranslate" type="checkbox"><span>Alt + Enter 翻译并发送</span></label>

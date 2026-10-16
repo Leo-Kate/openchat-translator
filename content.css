@@ -77,11 +77,11 @@
 .wst-message-action:focus-visible { opacity: 1; transform: translateY(0); }
 
 .wst-compose-action {
+  animation: wst-enter 160ms ease-out both;
   align-items: center;
   background: #2563eb;
   border: 0;
   border-radius: 999px;
-  bottom: 8px;
   box-shadow: 0 3px 10px rgba(37, 99, 235, .28);
   color: #fff;
   cursor: pointer;
@@ -89,8 +89,7 @@
   font: 700 11px/1 system-ui, sans-serif;
   height: 28px;
   justify-content: center;
-  position: absolute;
-  right: 52px;
+  position: static;
   transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
   min-width: 42px;
   padding: 0 8px;
@@ -101,17 +100,16 @@
 .wst-compose-action[disabled] { cursor: wait; opacity: .55; transform: scale(.96); }
 
 .wst-chat-toggle {
+  animation: wst-enter 160ms ease-out both;
   background: rgba(255, 255, 255, .94);
   border: 1px solid rgba(37, 99, 235, .2);
   border-radius: 999px;
-  bottom: 8px;
   color: #2563eb;
   cursor: pointer;
   font: 600 10px/1 system-ui, sans-serif;
   min-height: 28px;
   padding: 0 9px;
-  position: absolute;
-  right: 100px;
+  position: static;
   transition: background 140ms ease, color 140ms ease, transform 140ms ease;
   z-index: 5;
 }
@@ -119,18 +117,37 @@
 .wst-chat-toggle:hover { background: #eff6ff; transform: translateY(-1px); }
 .wst-chat-toggle[data-muted="true"] { background: #fff7ed; border-color: #fed7aa; color: #c2410c; }
 
+.wst-compose-tools {
+  align-items: center;
+  animation: wst-enter 160ms ease-out both;
+  background: var(--panel-background, #fff);
+  box-sizing: border-box;
+  color: var(--primary, #0f172a);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+  min-height: 34px;
+  padding: 3px 12px;
+  position: relative;
+  transition: opacity 140ms ease, transform 140ms ease;
+  width: 100%;
+}
+
+.wst-compose-tools > button { flex: 0 0 auto; }
+.wst-compose-tools > button:active { transform: scale(.96); }
+html[data-openchat-translator="off"] :is(.wst-compose-tools, .wst-message-action, .wst-translation-row) { display: none; }
+
 .wst-compose-status {
   animation: wst-enter 160ms ease-out both;
   background: rgba(15, 23, 42, .82);
   border-radius: 6px;
-  bottom: 44px;
   color: #fff;
   font: 10px/1.2 system-ui, sans-serif;
   max-width: 220px;
   padding: 5px 7px;
-  position: absolute;
-  right: 8px;
-  z-index: 6;
+  position: static;
 }
 
 .wst-compose-status[data-error="true"] { background: #b42318; }
@@ -171,3 +188,7 @@
 
 @keyframes wst-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes wst-exit { from { opacity: 1; } to { opacity: 0; transform: translateY(-3px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  [class^="wst-"] { animation: none !important; transition: none !important; }
+}

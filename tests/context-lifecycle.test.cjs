@@ -28,12 +28,20 @@ function fixture(options = {}) {
     }
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
     appendChild(node) { node.parentElement = this; this.children.push(node); return node; }
+    before(node) {
+      node.parentElement = this.parentElement;
+      this.parentElement.children.splice(this.parentElement.children.indexOf(this), 0, node);
+    }
+    get nextElementSibling() {
+      return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null;
+    }
     remove() {
       if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this);
       this.parentElement = null;
     }
     setAttribute(name, value) { this.attributes[name] = value; }
     getAttribute(name) { return this.attributes[name] || null; }
+    cloneNode() { return { textContent: this.textContent || this.innerText, querySelectorAll: () => [] }; }
     addEventListener(name, listener) { this.events[name] = listener; }
     closest(selector) { return selector === "footer" && this === composer ? footer : null; }
     matches() { return false; }
@@ -138,7 +146,7 @@ function fixture(options = {}) {
     getComputedStyle: () => ({ position: "relative" }),
     setInterval: (callback) => { const id = ++timerId; intervals.set(id, callback); return id; },
     clearInterval: (id) => intervals.delete(id),
-    setTimeout: (callback) => { const id = ++timerId; timeouts.set(id, callback); return id; },
+    setTimeout: (callback, delay) => { const id = ++timerId; timeouts.set(id, { callback, delay }); return id; },
     clearTimeout: (id) => timeouts.delete(id),
     console: { error: (...args) => errors.push(args) },
   });
@@ -152,6 +160,12 @@ function fixture(options = {}) {
     get storageListener() { return storageListener; },
     find: (selector) => body.querySelector(selector),
     tick: () => [...intervals.values()].forEach((callback) => callback()),
+    runTimeouts: (delay) => {
+      [...timeouts.entries()].filter(([, task]) => task.delay === delay).forEach(([id, task]) => {
+        timeouts.delete(id);
+        task.callback();
+      });
+    },
     ready: () => new Promise((resolve) => setImmediate(resolve)),
   };
 }
@@ -169,7 +183,7 @@ test("a valid context initializes translation controls", async () => {
   const page = fixture();
   await page.ready();
   assert.equal(page.document.documentElement.dataset.openchatTranslator, "on");
-  assert.equal(page.find(".wst-compose-action").textContent, "翻译");
+  assert.equal(page.find(".wst-compose-action").textContent, "翻译草稿");
   assert.equal(page.find(".wst-chat-toggle").textContent, "暂停翻译");
   assert.equal(page.observed, true);
   assert.equal(page.intervals.size, 1);
@@ -293,6 +307,8 @@ test("a late translation response cannot render after invalidation", async () =>
       callback({ ok: true, settings: { enabled: true, autoTranslate: true, sourceLang: "zh-CN", targetLang: "en" } });
     } else respond = callback;
   } });
+  await page.ready();
+  page.runTimeouts(0);
   await page.ready();
   assert.equal(typeof respond, "function");
   page.runtime.id = undefined;
