@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenChat 浏览器性能回归</title>
+<style>
+  body { max-width: 880px; margin: 48px auto; padding: 0 24px; color: #111827; background: #fff; font: 16px/1.6 system-ui, sans-serif; }
+  main { animation: appear .2s ease-out; }
+  input { border: 1px solid #cbd5e1; padding: 12px; border-radius: 8px; transition: border-color .15s ease, transform .15s ease; }
+  input:hover { border-color: #2563eb; transform: scale(1.01); }
+  input:active { transform: scale(.99); }
+  pre { overflow: auto; white-space: pre-wrap; font-size: 13px; }
+  iframe { width: 640px; height: 160px; border: 1px solid #cbd5e1; }
+  @keyframes appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<main>
+  <h1>OpenChat 浏览器性能回归</h1>
+  <p>选择项目中的 content.js 运行测试 使用真实浏览器 DOM 和模拟翻译数据 不读取聊天 不访问翻译服务</p>
+  <label>待测脚本 <input id="source" type="file" accept=".js"></label>
+  <p id="status" role="status">等待选择脚本</p>
+  <pre id="result"></pre>
+</main>
+<script src="browser-performance.js"></script>
+<script>
+  document.querySelector("#source").addEventListener("change", async (event) => {
+    const input = event.target;
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.querySelector("#status");
+    const output = document.querySelector("#result");
+    input.disabled = true;
+    output.textContent = "";
+    status.textContent = "正在运行回归测试";
+    try {
+      const results = await runOpenChatPerformanceTests(await file.text());
+      status.textContent = `${results.passed} / ${results.total} 项通过`;
+      output.textContent = JSON.stringify(results, null, 2);
+    } catch (error) {
+      status.textContent = "测试未能完成";
+      output.textContent = String(error.stack || error);
+    } finally {
+      input.disabled = false;
+    }
+  });
+</script>
+</html>

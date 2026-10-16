@@ -17,6 +17,8 @@
     composerWriting: false,
     contextInvalidated: false,
     scanTimer: null,
+    domTimer: null,
+    scanRoots: new Set(),
     observer: null,
   };
 
@@ -59,6 +61,7 @@
     state.settings = null;
     state.observer?.disconnect();
     clearInterval(state.scanTimer);
+    cancelDomUpdate();
     state.pending.clear();
     document.documentElement.dataset.openchatTranslator = "off";
     document.querySelectorAll(".wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-status").forEach((element) => {
@@ -250,10 +253,14 @@
   function updateChatToggle() {
     document.querySelectorAll(".wst-chat-toggle").forEach((button) => {
       const muted = currentChatMuted();
-      button.textContent = muted ? "恢复翻译" : "暂停翻译";
-      button.title = muted ? `恢复${state.activeChatLabel}的自动翻译` : `暂停${state.activeChatLabel}的自动翻译`;
-      button.setAttribute("aria-label", button.title);
-      button.dataset.muted = muted ? "true" : "false";
+      const text = muted ? "恢复翻译" : "暂停翻译";
+      const title = muted ? `恢复${state.activeChatLabel}的自动翻译` : `暂停${state.activeChatLabel}的自动翻译`;
+      // Replacing even identical text creates a childList mutation in Chrome.
+      if (button.textContent !== text) button.textContent = text;
+      if (button.title !== title) button.title = title;
+      if (button.getAttribute("aria-label") !== title) button.setAttribute("aria-label", title);
+      const value = muted ? "true" : "false";
+      if (button.dataset.muted !== value) button.dataset.muted = value;
     });
     document.querySelectorAll(".wst-compose-action").forEach((button) => {
       button.disabled = currentChatMuted() || Boolean(state.composerBusy);
@@ -289,6 +296,7 @@
     state.mutedChats = nextMutedChats;
     updateChatToggle();
     if (muted) removeAllTranslations();
+    else scheduleDomUpdate(document);
     return true;
   }
 
@@ -361,6 +369,7 @@
 
   async function translateMessage(message, force = false) {
     let key = "";
+    let ownsPending = false;
     try {
       if (!state.settings?.enabled || currentChatMuted()) return;
       const sourceText = textFromMessage(message);
@@ -377,23 +386,28 @@
       key = `${id}|${sourceText}|${source}|${target}`;
       if (state.pending.has(key)) return;
       state.pending.set(key, true);
+      ownsPending = true;
       const result = await send({ type: "translate", items: [{ text: sourceText, source, target, engine: state.settings.engine }] });
-      if (state.contextInvalidated) return;
+      if (state.contextInvalidated || !state.settings?.enabled || currentChatMuted() || message.isConnected === false) return;
       if (result.ok && result.translations?.[0]) renderTranslation(message, result.translations[0], sourceText, target);
     } catch (error) {
       if (isContextInvalidated(error) || !extensionContextAvailable()) markContextInvalidated();
       else console.error("OpenChat Translator message translation failed", error);
     } finally {
-      if (key) state.pending.delete(key);
+      if (ownsPending) state.pending.delete(key);
     }
   }
 
   function decorateMessage(message) {
-    if (!state.settings?.enabled || state.contextInvalidated || !(message instanceof HTMLElement) || message.dataset.wstMessage === "true") return;
+    if (!state.settings?.enabled || state.contextInvalidated || !(message instanceof HTMLElement)) return;
     const parentMessage = message.parentElement?.closest(messageSelectors.join(","));
     if (parentMessage && parentMessage !== message) return;
     const text = textFromMessage(message);
     if (!text) return;
+    if (message.dataset.wstMessage === "true") {
+      if (state.settings.autoTranslate) translateMessage(message);
+      return;
+    }
     message.dataset.wstMessage = "true";
     if (getComputedStyle(message).position === "static") message.style.position = "relative";
     const action = document.createElement("button");
@@ -616,17 +630,65 @@
     state.mutedChats = new Set(Array.isArray(stored[MUTED_CHATS_KEY]) ? stored[MUTED_CHATS_KEY] : []);
   }
 
+  const ownedSelector = ".wst-translation-row, .wst-message-action, .wst-compose-action, .wst-chat-toggle, .wst-compose-status, .wst-reload-notice";
+
+  function nodeElement(node) {
+    return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  }
+
+  function isOwnedNode(node) {
+    return Boolean(nodeElement(node)?.closest(ownedSelector));
+  }
+
+  function cancelDomUpdate() {
+    clearTimeout(state.domTimer);
+    state.domTimer = null;
+    state.scanRoots.clear();
+  }
+
+  function scheduleDomUpdate(root) {
+    if (!state.settings?.enabled || state.contextInvalidated || document.hidden) return;
+    if (root) state.scanRoots.add(root);
+    if (state.domTimer !== null) return;
+    // One pass per burst of WhatsApp mutations, outside the observer microtask.
+    state.domTimer = setTimeout(() => {
+      state.domTimer = null;
+      const roots = new Set(state.scanRoots);
+      state.scanRoots.clear();
+      if (!state.settings?.enabled || state.contextInvalidated || document.hidden) return;
+      refreshActiveChat();
+      for (const candidate of roots) {
+        if (candidate.isConnected === false) continue;
+        let ancestor = candidate.parentNode;
+        while (ancestor && !roots.has(ancestor)) ancestor = ancestor.parentNode;
+        if (!ancestor) scanMessages(candidate);
+      }
+      decorateComposer();
+    }, 80);
+  }
+
   const observer = new MutationObserver((mutations) => {
-    if (!state.settings?.enabled) return;
+    if (!state.settings?.enabled || state.contextInvalidated || document.hidden) return;
     for (const mutation of mutations) {
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === Node.ELEMENT_NODE) scanMessages(node);
-      });
+      const target = nodeElement(mutation.target);
+      // Our UI and composer keystrokes cannot introduce received messages.
+      if (isOwnedNode(mutation.target) || target?.closest("[contenteditable='true']")) continue;
+      const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+      if (mutation.type === "childList" && changed.every(isOwnedNode)) continue;
+      scheduleDomUpdate();
+      const message = target?.closest(messageSelectors.join(","));
+      if (message) scheduleDomUpdate(message);
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE && !isOwnedNode(node)) scheduleDomUpdate(node);
+      }
     }
-    refreshActiveChat();
-    decorateComposer();
   });
   state.observer = observer;
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) cancelDomUpdate();
+    else scheduleDomUpdate(document);
+  });
 
   document.addEventListener("pointerover", (event) => {
     if (!state.settings?.enabled) return;
@@ -640,12 +702,13 @@
       state.mutedChats = new Set(Array.isArray(changes[MUTED_CHATS_KEY].newValue) ? changes[MUTED_CHATS_KEY].newValue : []);
       updateChatToggle();
       if (currentChatMuted()) removeAllTranslations();
+      else scheduleDomUpdate(document);
     }
     if (changes.openchatSettings) {
       state.settings = publicSettings(changes.openchatSettings.newValue);
-      document.documentElement.dataset.openchatTranslator = state.settings.enabled ? "on" : "off";
-      scanMessages();
-      decorateComposer();
+      document.documentElement.dataset.openchatTranslator = state.settings?.enabled ? "on" : "off";
+      cancelDomUpdate();
+      scheduleDomUpdate(document);
     }
   }
 
@@ -660,20 +723,19 @@
       if (state.contextInvalidated) return;
       await loadMutedChats();
       if (state.contextInvalidated) return;
-      await refreshActiveChat();
-      scanMessages();
-      decorateComposer();
-      observer.observe(document.body, { childList: true, subtree: true });
+      if (!document.hidden && state.settings?.enabled) {
+        refreshActiveChat();
+        scanMessages();
+        decorateComposer();
+      }
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       state.scanTimer = setInterval(() => {
         if (state.contextInvalidated) return;
         if (!extensionContextAvailable()) {
           markContextInvalidated();
           return;
         }
-        if (!state.settings?.enabled) return;
-        refreshActiveChat();
-        scanMessages();
-        decorateComposer();
+        // Only check extension lifetime here; idle tabs must not rescan the DOM.
       }, 1500);
     } catch (error) {
       if (isContextInvalidated(error)) markContextInvalidated();
